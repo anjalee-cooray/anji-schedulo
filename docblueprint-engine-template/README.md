@@ -80,18 +80,19 @@ Claude Code will validate your `specs/user/` files and begin Phase 1.
 
 ### Step 7 — Claude Code fills the AI specs
 
-Claude Code reads your `specs/user/` files and derives the technical specs in `specs/ai/`:
+Claude Code reads your `specs/user/` files and derives the technical specs in `specs/ai/`. Each file is filled to production depth — not generic summaries:
 
 | File | What Claude Code derives |
 |---|---|
-| `domain.json` | All domain entities, aggregates, lifecycles |
-| `bounded-contexts.json` | Service boundaries, events published and subscribed |
-| `events.json` | Every domain event — producer, consumers, payload fields |
-| `architecture.json` | Architecture style and patterns suited to your NFRs |
-| `infrastructure.json` | Full cloud and tech stack |
-| `security.json` | Auth mechanism, RBAC roles, tenant isolation strategy |
-| `observability.json` | SLIs, SLOs, metrics, alerts |
-| `operations.json` | DLQ strategy, replay, backups, incident runbooks |
+| `domain.json` | Every aggregate root, entity, read model, and infrastructure entity — with lifecycle states, key attributes (including `tenant_id`), and pattern notes citing your BR/NFR IDs |
+| `bounded-contexts.json` | Service boundaries, published and subscribed events with reasons, named external dependencies (e.g. `Stripe (payment capture, refund APIs)`), and an explicit Outbox Relay context if the architecture uses a Transactional Outbox |
+| `events.json` | Every domain event with producer, consumers, trigger (referencing your user journey steps and FR/BR IDs), delivery guarantee, idempotency strategy, transport topology, and full envelope fields including `tenant_id`, `correlation_id`, `causation_id` |
+| `architecture.json` | Architecture style, per-pattern usage tied to NFR/BR IDs, per-service responsibility descriptions, and complete ADRs (context, decision, consequences) for every irreversible decision |
+| `infrastructure.json` | Full cloud stack differentiated per pricing tier — shared vs. dedicated resources, per-bucket S3 purposes and lifecycle policies, secrets rotation periods, cache TTLs, message bus topology with DLQ configuration |
+| `security.json` | JWT claims (required and optional), full public endpoint list, Enterprise SSO strategy, RBAC roles with permissions per persona, RLS-based tenant isolation layers with safe-default behaviour, PII erasure strategy, and CI test strategy for cross-tenant isolation |
+| `observability.json` | Full observability stack, SLI metric queries in actual PromQL, mandatory log fields, redacted PII fields list, trace sampling strategy by endpoint type (100% for critical paths, 10% for reads), named dashboards, and alerting thresholds as real query expressions |
+| `operations.json` | Every DLQ queue named explicitly per consumer service, replay scope options with job state tracking, cross-region backup strategy with RPO/RTO tied to NFR IDs, and per-severity incident runbook locations |
+| `apis.json` | API surface for each service — paths, methods, auth requirements, request/response shapes |
 
 ### Step 8 — Review the AI specs
 
@@ -129,6 +130,8 @@ Claude Code generates all documents in `project-docs/` layer by layer — using 
 | 06 — Operations | `06-operations/` | O1–O6 Operations docs + REL/FLAG/VER/HOT/COM flow docs |
 
 Per-persona and per-journey documents are generated as individual files.
+
+Sequence diagrams (D3) use Mermaid `sequenceDiagram` syntax. State machine diagrams (D4) use Mermaid `stateDiagram-v2`. API docs (D5) follow OpenAPI structure.
 
 ---
 

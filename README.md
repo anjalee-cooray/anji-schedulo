@@ -46,17 +46,17 @@ Open each file in `specs/user/` and replace placeholders with your project's rea
 
 Do not touch `specs/ai/` — Claude Code fills those.
 
-### 3 — Open in Claude Code
+### 3 — Open in Claude Code and type `start`
 
 ```bash
 claude .
 ```
 
-Claude Code reads `CLAUDE.md` automatically. It then runs four phases:
+Claude Code reads `CLAUDE.md` automatically. When it opens, type `start` to begin. It then runs four phases:
 
 1. **Validate** — checks all `specs/user/` files are fully filled
-2. **Fill AI specs** — derives `specs/ai/` in dependency order (domain → bounded contexts → events → architecture → infra → security → observability → operations)
-3. **Review** — prints a summary of every AI-filled file and waits for your confirmation
+2. **Fill AI specs** — derives `specs/ai/` in dependency order (domain → bounded contexts → events → architecture → infra → security → observability → operations → APIs), each file filled to production depth with actual PromQL queries, named DLQ queues, per-tier infrastructure, explicit JWT claims, tenant isolation layers, and ADRs with full context/decision/consequences
+3. **Review** — prints a summary of every AI-filled file and waits for your corrections
 4. **Generate docs** — on your "generate docs", writes all `project-docs/` layers
 
 ---
@@ -67,7 +67,7 @@ Claude Code reads `CLAUDE.md` automatically. It then runs four phases:
 |---|---|---|
 | 00 — Governance | `00-governance/` | Project charter, RACI matrix, risk register, change log, definition of done |
 | 01 — Requirements | `01-requirements/` | Glossary, stakeholder map, BRD, personas ×n, flow registry, journeys ×n, PRD, use cases, NFRs, acceptance criteria, compliance |
-| 02 — Design | `02-design/` | Data model, flow specs ×n, sequence diagrams ×n, state machines, API design, functional spec, error handling, DB schema, notifications, UI/UX spec, test strategy, user stories ×n |
+| 02 — Design | `02-design/` | Data model, flow specs ×n, sequence diagrams ×n (Mermaid), state machines (Mermaid), API design (OpenAPI), functional spec, error handling, DB schema, notifications, UI/UX spec, test strategy, user stories ×n |
 | 03 — Data | `03-data/` | Data dictionary, data flow diagram, seed data strategy |
 | 04 — Architecture | `04-architecture/` | A1–A13 architecture docs + infra/cicd/secrets/resilience/observability flows |
 | 05 — Developer Experience | `05-developer-experience/` | Local setup, coding standards, git workflow, PR guide, system walkthrough, developer FAQ |
