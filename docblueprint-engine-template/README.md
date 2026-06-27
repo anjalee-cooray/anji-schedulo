@@ -66,9 +66,19 @@ Open every file in `specs/user/` and replace the placeholder values with your pr
 claude .
 ```
 
-Claude Code reads `CLAUDE.md` automatically when the folder opens. No extra command needed.
+Claude Code reads `CLAUDE.md` as context when the folder opens. It then waits for you to start the session.
 
-### Step 6 — Claude Code fills the AI specs
+### Step 6 — Trigger the workflow
+
+Once Claude Code is open, type:
+
+```
+start
+```
+
+Claude Code will validate your `specs/user/` files and begin Phase 1.
+
+### Step 7 — Claude Code fills the AI specs
 
 Claude Code reads your `specs/user/` files and derives the technical specs in `specs/ai/`:
 
@@ -83,7 +93,7 @@ Claude Code reads your `specs/user/` files and derives the technical specs in `s
 | `observability.json` | SLIs, SLOs, metrics, alerts |
 | `operations.json` | DLQ strategy, replay, backups, incident runbooks |
 
-### Step 7 — Review the AI specs
+### Step 8 — Review the AI specs
 
 Claude Code prints a summary of everything it filled. Read through `specs/ai/`. If anything needs correcting, tell Claude Code in plain language:
 
@@ -94,7 +104,7 @@ update architecture.json and re-derive bounded-contexts.json."
 
 Claude Code applies the correction and updates any downstream files.
 
-### Step 8 — Confirm and generate docs
+### Step 9 — Confirm and generate docs
 
 When you are happy with both spec folders, tell Claude Code:
 

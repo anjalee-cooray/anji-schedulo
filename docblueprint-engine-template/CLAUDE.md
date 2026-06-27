@@ -5,6 +5,12 @@ This project uses a two-category spec system. Follow the three phases below in o
 
 ---
 
+## How to begin
+
+When the user types `start` (or any greeting), begin Phase 1 immediately.
+
+---
+
 ## Phase 1 — Check user-filled specs
 
 Read every file in `specs/user/`. These are filled by the human:
