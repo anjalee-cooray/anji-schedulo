@@ -1,216 +1,170 @@
-# docblueprint-engine
+# docblueprint-engine — project template
 
-A spec-driven documentation engine. AI generates every document, humans review and approve. The result is 99 structured documents across 7 categories — a complete single source of truth before a single line of code is written.
+Generate a complete suite of project documents from a single JSON file using Claude Code.
 
----
-
-## What is docblueprint-engine?
-
-Most teams write docs after the fact, if at all. docblueprint-engine flips this. You answer questions in a conversational interview. The AI uses your answers to generate a full document suite in strict dependency order — governance first, then requirements, design, data, architecture, developer experience, and operations.
-
-Every document is a draft. You read it. You correct it in plain language. The AI regenerates. Corrections cascade downstream — if you change a requirement, every document that depends on it is flagged as stale.
-
-The result: a complete, consistent, traceable specification before any implementation begins.
+No CLI. No API key. No install step.
 
 ---
 
-## How it works
+## Steps to run
 
-### Step 1 — Interview
+### Step 1 — Install Claude Code
 
 ```bash
-npx docblueprint-engine interview
+npm install -g @anthropic/claude-code
 ```
 
-The CLI asks one question at a time. You answer in plain language. The AI extracts structured data from your responses and progressively builds `.docblueprint.json`. Topics covered: product description, business model, domain, personas, main user flows, stack preferences, cloud provider, compliance requirements.
-
-### Step 2 — Generate docs
+### Step 2 — Log in to Claude Code
 
 ```bash
-npx docblueprint-engine generate:docs
+claude login
 ```
 
-Generates all 99 documents layer by layer in strict dependency order. Each document is a Claude API call with all approved upstream documents as context. You review each layer before the next generates. If something is wrong, correct it in plain language and the CLI regenerates.
+This opens a browser to authenticate with your Anthropic account. Complete the login and return to the terminal.
 
-### Step 3 — Validate
+### Step 3 — Clone this repo
 
 ```bash
-npx docblueprint-engine validate
+git clone https://github.com/your-org/docblueprint-engine-template my-project
+cd my-project
 ```
 
-Checks consistency across all documents. Verifies that flow registry IDs are referenced correctly throughout. Flags documents that are still placeholders. Reports drift — documents that reference stale upstream data.
+### Step 4 — Fill in `.docblueprint.json`
 
----
+Open `.docblueprint.json`. It contains example values with comments explaining each field. Replace every value with your project's real details.
 
-## The 7 document categories
-
-| # | Category | Docs | Purpose |
-|---|----------|------|---------|
-| 00 | **Governance** | 5 | Project charter, RACI matrix, risk register, change log, definition of done |
-| 01 | **Requirements** | 11 | Domain glossary, stakeholder map, BRD, personas, flow registry, user journeys, PRD, use cases, NFRs, acceptance criteria, compliance |
-| 02 | **Design** | 12 | Data model, flow specs, sequence diagrams, state machines, API design, functional spec, error handling, DB schema, notifications, UI/UX spec, test strategy, user stories |
-| 03 | **Data** | 3 | Data dictionary, data flow diagram, seed data strategy |
-| 04 | **Architecture** | 13 + 20 flows | System arch, tech stack, security model, threat model, data privacy, infrastructure, scaling, deployment, integrations, observability, disaster recovery, multi-tenancy, ADRs — plus infra/cicd/secrets/resilience/observability flows |
-| 05 | **Developer Experience** | 6 | Local setup guide, coding standards, git workflow, PR review guide, system walkthrough, developer FAQ |
-| 06 | **Operations** | 6 + 17 flows | Release plan, feature flag strategy, rollback plan, runbook, incident response, secrets rotation policy — plus release/flag/version/hotfix/comms flows |
-
-**Total: 99 documents**
-
----
-
-## Document ordering — why it matters
-
-Documents are generated in strict dependency order. Each document is context for the next.
-
-- Domain Glossary → BRD (shared vocabulary before business requirements)
-- BRD → PRD (business goals before product decisions)
-- Personas → User Journeys (who before what)
-- Data Model → Sequence Diagrams (entities before interactions)
-- Sequence Diagrams → API Design (interactions before contracts)
-- Flow Specs → User Stories (flows before story decomposition)
-- All of the above → Architecture (decisions informed by requirements)
-- Architecture → Developer Experience (system understood before onboarding)
-- Everything → Operations (operations planned last, informed by everything)
-
-Skipping layers produces documents that contradict each other. The CLI enforces the order.
-
----
-
-## The flow registry — the spine of everything
-
-`01-requirements/R5-flow-registry.md` assigns a unique `FLOW-ID` to every user journey in the system.
-
-Every downstream document references flows by ID. A sequence diagram references `FLOW-003`. An acceptance criterion references `FLOW-003`. A feature flag references `FLOW-003`. The validator checks every reference is consistent.
-
-This creates end-to-end traceability: business goal → user flow → functional spec → acceptance criteria → test case. Nothing falls through the cracks.
-
----
-
-## The review loop
-
-Human never writes from scratch.
-
-```
-AI drafts → Human reviews → Human corrects in plain language → AI regenerates
+```json
+{
+  "project": {
+    "name": "My Project",
+    "description": "What this product does and who it is for."
+  },
+  "domain": "healthtech",
+  "businessModel": ["B2B", "SaaS"],
+  "personas": [
+    { "id": "P1", "name": "Admin", "role": "Administrator", "description": "..." },
+    { "id": "P2", "name": "End User", "role": "Customer", "description": "..." }
+  ],
+  "flows": [
+    { "id": "F1", "name": "User Signup", "persona": "P2", "priority": "critical", "description": "..." }
+  ],
+  "stack": {
+    "backend": "Node.js",
+    "frontend": "React",
+    "database": "PostgreSQL",
+    "cloud": "AWS"
+  },
+  "compliance": ["HIPAA"],
+  "releaseModel": "continuous",
+  "featureFlags": true,
+  "versioning": true
+}
 ```
 
-Corrections cascade. If you change a persona's goal in `R4a`, the CLI flags `R6` (journeys), `R7` (PRD), `R10` (acceptance criteria), and `D10` (UI/UX spec) as stale and offers to regenerate them with the updated context.
+**Tips:**
+- Add as many personas and flows as your project needs — documents expand automatically per item
+- Leave stack fields empty (`""`) for technologies you're not using
+- Use `"none"` for compliance if there are no requirements
 
-The correction loop uses the same Claude API call pattern — the AI sees the original draft, the human's correction note, and regenerates the document incorporating the feedback.
+### Step 5 — Open the project folder in Claude Code
+
+```bash
+claude .
+```
+
+Claude Code automatically reads `CLAUDE.md` when it opens the folder. No extra command is needed.
+
+### Step 6 — Let Claude Code generate the documents
+
+Claude Code will:
+
+1. Read `.docblueprint.json` — your project brief
+2. Read each placeholder template in `project-docs/`
+3. Generate full, tailored document content for your project
+4. Write the filled documents back into `project-docs/`
+
+Documents are generated layer by layer in dependency order — governance first, then requirements, design, data, architecture, developer experience, and operations.
+
+When complete, Claude Code prints a summary table confirming every file written.
+
+### Step 7 — Review the output
+
+Open any file in `project-docs/` to read the generated content. If something needs adjusting, tell Claude Code directly in plain language:
+
+```
+"The personas in R4a don't match our actual user types — update them and regenerate the downstream documents."
+```
+
+Claude Code will apply the correction and update any affected files.
 
 ---
 
-## Business model extensions
+## What gets generated
 
-The generated document set adapts to your business model. Additional documents are included automatically based on your `businessModel` config:
+| Layer | Folder | Documents |
+|---|---|---|
+| 00 — Governance | `00-governance/` | G1 Project Charter, G2 RACI Matrix, G3 Risk Register, G4 Change Log, G5 Definition of Done |
+| 01 — Requirements | `01-requirements/` | R1 Glossary, R2 Stakeholder Map, R3 BRD, R4a Personas ×n, R5 Flow Registry, R6 Journeys ×n, R7 PRD, R8 Use Cases, R9 NFRs, R10 Acceptance Criteria, R11 Compliance |
+| 02 — Design | `02-design/` | D1 Data Model, D2 Flow Specs ×n, D3 Sequence Diagrams ×n, D4 State Machines, D5 API Design, D6 Functional Spec, D7 Error Handling, D8 DB Schema, D9 Notifications, D10 UI/UX Spec, D11 Test Strategy, D12 User Stories ×n |
+| 03 — Data | `03-data/` | DM1 Data Dictionary, DM2 Data Flow Diagram, DM3 Seed Data Strategy |
+| 04 — Architecture | `04-architecture/` | A1–A13 Architecture docs + INF/CD/SEC/RES/OBS flow docs |
+| 05 — Developer Experience | `05-developer-experience/` | DX1 Local Setup, DX2 Coding Standards, DX3 Git Workflow, DX4 PR Guide, DX5 System Walkthrough, DX6 Developer FAQ |
+| 06 — Operations | `06-operations/` | O1–O6 Operations docs + REL/FLAG/VER/HOT/COM flow docs |
 
-**B2B** — org hierarchy model, SSO architecture, audit log spec, admin panel design, multi-org data isolation
-
-**B2C** — onboarding flow specs, notification design, retention mechanics, consumer compliance addenda
-
-**SaaS** — multi-tenancy architecture, subscription billing design, usage metering, plan entitlements
-
-**PaaS** — API-first architecture, developer DX docs, SDK documentation plan, rate limiting design, webhook spec
-
-**B2B2C** — three-sided permission model, white-labeling architecture, partner dashboard specs, tenant customisation model
+Per-persona documents (R4a) and per-flow documents (R6, D2, D3, D12) are generated as individual files using the IDs from your `.docblueprint.json`.
 
 ---
 
 ## Folder structure
 
 ```
-project-docs/
-├── 00-governance/           Project charter, RACI, risks, change log, definition of done
-├── 01-requirements/
-│   ├── personas/            One file per persona
-│   └── journeys/            One file per user journey
-├── 02-design/
-│   ├── flow-specs/          Detailed flow specifications
-│   ├── sequence-diagrams/   Mermaid sequence diagrams
-│   └── user-stories/        Story decompositions per flow
-├── 03-data/                 Data dictionary, flow diagram, seed strategy
-├── 04-architecture/
-│   ├── adrs/                Architecture Decision Records
-│   ├── infra-flows/         Infrastructure provisioning flows
-│   ├── cicd-flows/          CI/CD pipeline flows
-│   ├── secrets-flows/       Secrets management flows
-│   ├── resilience-flows/    Auto-scaling, incident response, DR flows
-│   └── observability-flows/ Logging, alerting, tracing flows
-├── 05-developer-experience/ Local setup, standards, git workflow, PR guide, walkthrough, FAQ
-├── 06-operations/
-│   ├── release-flows/       RC cut → validation → go/no-go → production → stabilisation
-│   ├── flag-flows/          Feature flag lifecycle flows
-│   ├── version-flows/       Versioning and deprecation flows
-│   ├── hotfix-flows/        Hotfix and emergency change flows
-│   └── comms-flows/         Release comms and retrospective flows
-└── fe-design/
-    ├── lofi/web/            Low-fidelity wireframes (web)
-    ├── lofi/mobile/         Low-fidelity wireframes (mobile)
-    ├── hifi/web/            High-fidelity specs (web)
-    ├── hifi/mobile/         High-fidelity specs (mobile)
-    └── component-specs/     Component specification templates
-
-scripts/
-└── setup.sh                 Prerequisite check script
-
-.docblueprint.json           Your project config (built by the interview command)
-.docblueprint.schema.json    JSON schema for .docblueprint.json
-Makefile                     Convenience targets: interview, generate, validate
+my-project/
+├── .docblueprint.json              ← your project brief (fill this in)
+├── CLAUDE.md                       ← generation prompt (do not edit)
+└── project-docs/
+    ├── 00-governance/
+    ├── 01-requirements/
+    │   ├── personas/               ← one file per persona after generation
+    │   └── journeys/               ← one file per flow after generation
+    ├── 02-design/
+    │   ├── flow-specs/
+    │   ├── sequence-diagrams/
+    │   └── user-stories/
+    ├── 03-data/
+    ├── 04-architecture/
+    │   ├── adrs/
+    │   ├── infra-flows/
+    │   ├── cicd-flows/
+    │   ├── secrets-flows/
+    │   ├── resilience-flows/
+    │   └── observability-flows/
+    ├── 05-developer-experience/
+    ├── 06-operations/
+    │   ├── release-flows/
+    │   ├── flag-flows/
+    │   ├── version-flows/
+    │   ├── hotfix-flows/
+    │   └── comms-flows/
+    └── fe-design/
+        ├── lofi/
+        ├── hifi/
+        └── component-specs/
 ```
 
 ---
 
-## Prerequisites
+## Why dependency order matters
 
-- **Node.js 18+** — check with `node --version`
-- **Anthropic API key** — set as `ANTHROPIC_API_KEY` environment variable
+Each document is context for the next. Claude Code generates them in strict order so later documents are always consistent with earlier ones:
 
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-```
-
-Run the setup check to verify both:
-
-```bash
-bash scripts/setup.sh
-```
+- Glossary → BRD (shared vocabulary before requirements)
+- Personas → User Journeys (who before what)
+- Data Model → Sequence Diagrams (entities before interactions)
+- Sequence Diagrams → API Design (interactions before contracts)
+- All of the above → Architecture (decisions informed by requirements)
+- Architecture → Developer Experience (system understood before onboarding docs)
+- Everything → Operations (operations planned last, informed by everything)
 
 ---
 
-## Getting started
-
-```bash
-# Create a new project from this template
-gh repo create my-project --template org/docblueprint-engine-template --clone
-cd my-project
-
-# Check prerequisites
-bash scripts/setup.sh
-
-# Run the interview — builds .docblueprint.json
-npx docblueprint-engine interview
-# or: make interview
-
-# Generate all 99 documents
-npx docblueprint-engine generate:docs
-# or: make generate
-
-# Validate consistency
-npx docblueprint-engine validate
-# or: make validate
-```
-
----
-
-## Contributing
-
-Contributions welcome. The CLI lives in [docblueprint-engine-cli](https://github.com/org/docblueprint-engine-cli).
-
-- Open an issue to discuss changes before submitting a PR
-- Follow the existing file naming conventions
-- Keep document IDs stable — downstream tools depend on them
-- Add entries to the flow registry when adding new flow spec templates
-
----
-
-*Generated by docblueprint-engine — spec-driven documentation for teams who ship.*
+*Built with [docblueprint-engine](https://github.com/org/docblueprint-engine)*
