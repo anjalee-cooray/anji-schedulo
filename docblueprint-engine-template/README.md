@@ -38,7 +38,7 @@ This opens a browser to authenticate with your Anthropic account. Complete the l
 ### Step 3 — Clone this repo
 
 ```bash
-git clone https://github.com/your-org/docblueprint-engine-template my-project
+git clone https://github.com/anjalee-cooray/docblueprint-engine my-project
 cd my-project
 ```
 
@@ -160,4 +160,4 @@ my-project/
 
 ---
 
-*Built with [docblueprint-engine](https://github.com/your-org/docblueprint-engine)*
+*Built with [docblueprint-engine](https://github.com/anjalee-cooray/docblueprint-engine)*

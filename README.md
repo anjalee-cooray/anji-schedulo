@@ -24,7 +24,7 @@ Once both are complete and reviewed, Claude Code generates all documents in `pro
 ### 1 — Clone the template
 
 ```bash
-git clone https://github.com/your-org/docblueprint-engine-template my-project
+git clone https://github.com/anjalee-cooray/docblueprint-engine my-project
 cd my-project
 ```
 
