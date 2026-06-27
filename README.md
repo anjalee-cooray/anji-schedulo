@@ -15,13 +15,13 @@ Specs are split into two categories:
 | **User specs** | `specs/user/` | You — product knowledge only you have |
 | **AI specs** | `specs/ai/` | Claude Code — derived from your user specs |
 
-Once both are complete and reviewed, Claude Code generates all documents in `project-docs/`.
+Once both are complete and reviewed, Claude Code generates all documents in `documentation/`.
 
 ---
 
 ## Quickstart
 
-### 1 — Clone the template
+### 1 — Clone this repo
 
 ```bash
 git clone https://github.com/anjalee-cooray/docblueprint-engine my-project
@@ -57,7 +57,7 @@ Claude Code reads `CLAUDE.md` automatically. When it opens, type `start` to begi
 1. **Validate** — checks all `specs/user/` files are fully filled
 2. **Fill AI specs** — derives `specs/ai/` in dependency order (domain → bounded contexts → events → architecture → infra → security → observability → operations → APIs), each file filled to production depth with actual PromQL queries, named DLQ queues, per-tier infrastructure, explicit JWT claims, tenant isolation layers, and ADRs with full context/decision/consequences
 3. **Review** — prints a summary of every AI-filled file and waits for your corrections
-4. **Generate docs** — on your "generate docs", writes all `project-docs/` layers
+4. **Generate docs** — on your "generate docs", writes all `documentation/` layers
 
 ---
 
@@ -69,51 +69,52 @@ Claude Code reads `CLAUDE.md` automatically. When it opens, type `start` to begi
 | 01 — Requirements | `01-requirements/` | Glossary, stakeholder map, BRD, personas ×n, flow registry, journeys ×n, PRD, use cases, NFRs, acceptance criteria, compliance |
 | 02 — Design | `02-design/` | Data model, flow specs ×n, sequence diagrams ×n (Mermaid), state machines (Mermaid), API design (OpenAPI), functional spec, error handling, DB schema, notifications, UI/UX spec, test strategy, user stories ×n |
 | 03 — Data | `03-data/` | Data dictionary, data flow diagram, seed data strategy |
-| 04 — Architecture | `04-architecture/` | A1–A13 architecture docs + infra/cicd/secrets/resilience/observability flows |
+| 04 — Architecture | `04-architecture/` | A1–A13 architecture docs + infra/cicd/secrets/resilience/observability flows + ADRs |
 | 05 — Developer Experience | `05-developer-experience/` | Local setup, coding standards, git workflow, PR guide, system walkthrough, developer FAQ |
 | 06 — Operations | `06-operations/` | Release plan, feature flags, rollback, runbook, incident response, secrets rotation + release/flag/version/hotfix/comms flows |
+| 07 — Frontend Design | `07-frontend-design/` | Lo-fi wireframes, hi-fi designs, design tokens, component specs |
 
 Per-persona and per-journey documents are generated as individual files.
 
 ---
 
-## Repository structure
+## Folder structure
 
 ```
-docblueprint-engine/
-├── README.md                               ← you are here
-└── docblueprint-engine-template/           ← the template users clone
-    ├── CLAUDE.md                           ← four-phase generation prompt
-    ├── README.md                           ← step-by-step usage guide
-    ├── specs/
-    │   ├── user/                           ← YOU fill these (9 files)
-    │   │   ├── metadata.json
-    │   │   ├── product.json
-    │   │   ├── personas.json
-    │   │   ├── functional-requirements.json
-    │   │   ├── business-rules.json
-    │   │   ├── user-journeys.json
-    │   │   ├── glossary.json
-    │   │   ├── non-functional-requirements.json
-    │   │   └── roadmap.json
-    │   └── ai/                             ← Claude Code fills these (9 files)
-    │       ├── domain.json
-    │       ├── bounded-contexts.json
-    │       ├── events.json
-    │       ├── architecture.json
-    │       ├── infrastructure.json
-    │       ├── security.json
-    │       ├── observability.json
-    │       ├── operations.json
-    │       └── apis.json
-    └── project-docs/                       ← generated documents land here
-        ├── 00-governance/
-        ├── 01-requirements/
-        ├── 02-design/
-        ├── 03-data/
-        ├── 04-architecture/
-        ├── 05-developer-experience/
-        └── 06-operations/
+my-project/
+├── CLAUDE.md                       ← generation prompt (do not edit)
+├── specs/
+│   ├── README.md                   ← explains the two categories
+│   ├── user/                       ← YOU fill these (9 files)
+│   │   ├── metadata.json
+│   │   ├── product.json
+│   │   ├── personas.json
+│   │   ├── functional-requirements.json
+│   │   ├── business-rules.json
+│   │   ├── user-journeys.json
+│   │   ├── glossary.json
+│   │   ├── non-functional-requirements.json
+│   │   └── roadmap.json
+│   └── ai/                         ← Claude Code fills these (9 files)
+│       ├── domain.json
+│       ├── bounded-contexts.json
+│       ├── events.json
+│       ├── architecture.json
+│       ├── infrastructure.json
+│       ├── security.json
+│       ├── observability.json
+│       ├── operations.json
+│       └── apis.json
+└── documentation/                  ← generated documents land here
+    ├── 00-governance/
+    ├── 01-requirements/
+    ├── 02-design/
+    ├── 03-data/
+    ├── 04-architecture/
+    │   └── adrs/
+    ├── 05-developer-experience/
+    ├── 06-operations/
+    └── 07-frontend-design/
 ```
 
 ---
@@ -122,5 +123,5 @@ docblueprint-engine/
 
 - User spec templates live in `specs/user/` — update placeholder text to stay helpful
 - AI spec shells live in `specs/ai/` — update the `_ai` derivation notes when sources change
-- Template doc structure lives in `project-docs/` — keep document IDs stable (G1, R1, D1, A1, etc.)
+- Documentation structure lives in `documentation/` — keep document IDs stable (G1, R1, D1, A1, etc.)
 - Update `CLAUDE.md` when adding new spec files, document types, or changing generation order

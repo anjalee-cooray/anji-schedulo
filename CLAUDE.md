@@ -286,35 +286,39 @@ Wait for the user to confirm before proceeding to Phase 4.
 
 ## Phase 4 — Generate documents
 
-Once the user confirms, generate all documents in `project-docs/` using all `specs/user/` and `specs/ai/` files as the source of truth. Work layer by layer in strict dependency order.
+Once the user confirms, generate all documents in `documentation/` using all `specs/user/` and `specs/ai/` files as the source of truth. Work layer by layer in strict dependency order.
 
-**Layer 00 — Governance** (`project-docs/00-governance/`)
+**Layer 00 — Governance** (`documentation/00-governance/`)
 Sources: `metadata.json`, `product.json`, `roadmap.json`
 Files: G1-project-charter.md, G2-raci-matrix.md, G3-risk-register.md, G4-change-log.md, G5-definition-of-done.md
 
-**Layer 01 — Requirements** (`project-docs/01-requirements/`)
+**Layer 01 — Requirements** (`documentation/01-requirements/`)
 Sources: `personas.json`, `functional-requirements.json`, `business-rules.json`, `user-journeys.json`, `glossary.json`, `non-functional-requirements.json`
 Files: R1 Glossary, R2 Stakeholder Map, R3 BRD, R4a Personas (one file per persona), R5 Flow Registry, R6 Journeys (one file per journey), R7 PRD, R8 Use Cases, R9 NFRs, R10 Acceptance Criteria, R11 Compliance
 
-**Layer 02 — Design** (`project-docs/02-design/`)
+**Layer 02 — Design** (`documentation/02-design/`)
 Sources: `domain.json`, `bounded-contexts.json`, `events.json`, `apis.json`, `user-journeys.json`, `security.json`
 Files: D1 Data Model, D2 Flow Specs (one per journey), D3 Sequence Diagrams (one per journey), D4 State Machines, D5 API Design, D6 Functional Spec, D7 Error Handling, D8 DB Schema, D9 Notifications, D10 UI/UX Spec, D11 Test Strategy, D12 User Stories (one per journey)
 
-**Layer 03 — Data** (`project-docs/03-data/`)
+**Layer 03 — Data** (`documentation/03-data/`)
 Sources: `domain.json`, `infrastructure.json`
 Files: DM1 Data Dictionary, DM2 Data Flow Diagram, DM3 Seed Data Strategy
 
-**Layer 04 — Architecture** (`project-docs/04-architecture/`)
+**Layer 04 — Architecture** (`documentation/04-architecture/`)
 Sources: `architecture.json`, `infrastructure.json`, `security.json`, `bounded-contexts.json`, `events.json`
-Files: A1–A13 Architecture docs + all infra/cicd/secrets/resilience/observability flow docs
+Files: A1–A13 Architecture docs + all infra/cicd/secrets/resilience/observability flow docs + ADRs in `adrs/`
 
-**Layer 05 — Developer Experience** (`project-docs/05-developer-experience/`)
+**Layer 05 — Developer Experience** (`documentation/05-developer-experience/`)
 Sources: `infrastructure.json`, `architecture.json`, `metadata.json`, `bounded-contexts.json`
 Files: DX1 Local Setup, DX2 Coding Standards, DX3 Git Workflow, DX4 PR Guide, DX5 System Walkthrough, DX6 Developer FAQ
 
-**Layer 06 — Operations** (`project-docs/06-operations/`)
+**Layer 06 — Operations** (`documentation/06-operations/`)
 Sources: `operations.json`, `observability.json`, `roadmap.json`, `infrastructure.json`
 Files: O1–O6 Operations docs + all release/flag/version/hotfix/comms flow docs
+
+**Layer 07 — Frontend Design** (`documentation/07-frontend-design/`)
+Sources: `personas.json`, `user-journeys.json`, `functional-requirements.json`
+Files: F1 Lo-fi wireframes (web + mobile), F2 Design tokens, F3 Hi-fi designs (web + mobile), F4 Component specs
 
 ### Generation rules
 
@@ -341,5 +345,6 @@ Print a final table:
 | 04 — Architecture | N | ✓ |
 | 05 — Developer Experience | 6 | ✓ |
 | 06 — Operations | N | ✓ |
+| 07 — Frontend Design | N | ✓ |
 
-Then confirm: **All documents written to `project-docs/`.**
+Then confirm: **All documents written to `documentation/`.**
