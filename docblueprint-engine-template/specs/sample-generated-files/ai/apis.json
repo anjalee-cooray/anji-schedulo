@@ -1,0 +1,290 @@
+{
+  "_ai": "AI fills this. Derived from: functional-requirements.json + bounded-contexts.json + personas.json. Do not edit manually.",
+  "apis": [
+    {
+      "service": "tenant-service",
+      "baseUrl": "/api/v1",
+      "authRequired": "JWT (except POST /tenants)",
+      "endpoints": [
+        {
+          "method": "POST",
+          "path": "/tenants",
+          "summary": "Register a new tenant",
+          "relatedRequirement": "FR001",
+          "roles": ["unauthenticated"],
+          "requestBody": { "businessName": "string", "ownerEmail": "string", "plan": "starter|pro|enterprise" },
+          "responses": { "202": "Registration accepted, provisioning started", "409": "Email already registered" },
+          "idempotencyKey": true
+        },
+        {
+          "method": "GET",
+          "path": "/tenants/{tenantId}",
+          "summary": "Get tenant profile and current config",
+          "relatedRequirement": "FR002",
+          "roles": ["tenant_admin", "platform_operator"],
+          "responses": { "200": "Tenant object with config", "404": "Tenant not found" }
+        },
+        {
+          "method": "PUT",
+          "path": "/tenants/{tenantId}/config",
+          "summary": "Update tenant operational config (cancellation policy, booking window, max advance bookings)",
+          "relatedRequirement": "FR002",
+          "roles": ["tenant_admin"],
+          "requestBody": { "cancellation_hours": "integer", "booking_window_days": "integer", "max_advance_bookings": "integer", "notification_channels": ["email", "sms", "whatsapp"] },
+          "responses": { "200": "Updated config", "400": "Invalid config values", "403": "Insufficient role" }
+        },
+        {
+          "method": "POST",
+          "path": "/tenants/{tenantId}/staff",
+          "summary": "Add a new staff member",
+          "relatedRequirement": "FR002",
+          "roles": ["tenant_admin"],
+          "requestBody": { "name": "string", "email": "string", "workingHours": [{ "dayOfWeek": "integer", "startTime": "HH:mm", "endTime": "HH:mm" }] },
+          "responses": { "201": "Staff member created", "409": "Email already exists for this tenant" }
+        },
+        {
+          "method": "PUT",
+          "path": "/tenants/{tenantId}/staff/{staffId}",
+          "summary": "Update a staff member's details or working hours",
+          "relatedRequirement": "FR002",
+          "roles": ["tenant_admin"],
+          "responses": { "200": "Updated staff member", "404": "Staff not found" }
+        },
+        {
+          "method": "DELETE",
+          "path": "/tenants/{tenantId}/staff/{staffId}",
+          "summary": "Deactivate a staff member (soft delete)",
+          "relatedRequirement": "FR002",
+          "roles": ["tenant_admin"],
+          "responses": { "204": "Staff deactivated", "409": "Staff has future confirmed appointments" }
+        },
+        {
+          "method": "POST",
+          "path": "/tenants/{tenantId}/staff/{staffId}/blocks",
+          "summary": "Add a staff unavailability block",
+          "relatedRequirement": "FR002",
+          "roles": ["tenant_admin", "staff"],
+          "requestBody": { "startAt": "ISO 8601 datetime", "endAt": "ISO 8601 datetime", "reason": "string (optional)" },
+          "responses": { "201": "Block created", "409": "Overlaps with confirmed appointment" }
+        },
+        {
+          "method": "POST",
+          "path": "/tenants/{tenantId}/services",
+          "summary": "Create a new bookable service",
+          "relatedRequirement": "FR002",
+          "roles": ["tenant_admin"],
+          "requestBody": { "name": "string", "durationMinutes": "integer", "pricePence": "integer", "currency": "string" },
+          "responses": { "201": "Service created" }
+        },
+        {
+          "method": "PUT",
+          "path": "/tenants/{tenantId}/services/{serviceId}",
+          "summary": "Update a service definition",
+          "relatedRequirement": "FR002",
+          "roles": ["tenant_admin"],
+          "responses": { "200": "Updated service", "404": "Service not found" }
+        },
+        {
+          "method": "DELETE",
+          "path": "/tenants/{tenantId}/services/{serviceId}",
+          "summary": "Deactivate a service",
+          "relatedRequirement": "FR002",
+          "roles": ["tenant_admin"],
+          "responses": { "204": "Service deactivated" }
+        }
+      ]
+    },
+    {
+      "service": "availability-service",
+      "baseUrl": "/api/v1",
+      "authRequired": "None (public endpoint for customer slot browsing)",
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/tenants/{tenantId}/availability",
+          "summary": "Query available slots for a tenant's staff and service on a date",
+          "relatedRequirement": "FR003",
+          "roles": ["unauthenticated", "customer"],
+          "queryParams": { "serviceId": "UUID (required)", "date": "YYYY-MM-DD (required)", "staffId": "UUID (optional — omit for any available staff)" },
+          "responses": { "200": "Array of available slots with staff details", "400": "Invalid date or service", "404": "No available slots" },
+          "performanceTarget": "p95 < 500ms (NFR005)"
+        }
+      ]
+    },
+    {
+      "service": "booking-command-service",
+      "baseUrl": "/api/v1",
+      "authRequired": "Customer identity via email (unauthenticated booking flow) or JWT for authenticated flows",
+      "endpoints": [
+        {
+          "method": "POST",
+          "path": "/tenants/{tenantId}/bookings",
+          "summary": "Create a booking — initiates the booking saga (reserve slot → capture payment → confirm appointment)",
+          "relatedRequirement": "FR004",
+          "roles": ["unauthenticated", "customer"],
+          "headers": { "Idempotency-Key": "UUID (required — prevents duplicate bookings on retry)" },
+          "requestBody": { "serviceId": "UUID", "staffId": "UUID (optional)", "slotDate": "YYYY-MM-DD", "slotStart": "HH:mm", "customer": { "name": "string", "email": "string", "phone": "string (optional)" }, "paymentToken": "string (optional — required if service has price > 0)" },
+          "responses": {
+            "201": "Appointment confirmed — returns appointment object",
+            "409": "Slot no longer available (saga compensated — no charge)",
+            "402": "Payment failed (saga compensated — slot released)",
+            "429": "Customer has reached max_advance_bookings limit"
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/tenants/{tenantId}/bookings/{appointmentId}",
+          "summary": "Get appointment details and event history",
+          "relatedRequirement": "FR004",
+          "roles": ["customer (own appointment)", "tenant_admin", "staff (own appointments)", "platform_operator"],
+          "responses": { "200": "Appointment object with event history", "404": "Appointment not found", "403": "Not authorized to view this appointment" }
+        },
+        {
+          "method": "GET",
+          "path": "/tenants/{tenantId}/bookings",
+          "summary": "List appointments for a tenant (admin view)",
+          "relatedRequirement": "FR008",
+          "roles": ["tenant_admin", "platform_operator"],
+          "queryParams": { "date": "YYYY-MM-DD (optional)", "staffId": "UUID (optional)", "status": "string (optional)", "page": "integer", "pageSize": "integer" },
+          "responses": { "200": "Paginated appointment list" }
+        }
+      ]
+    },
+    {
+      "service": "cancellation-saga-service",
+      "baseUrl": "/api/v1",
+      "authRequired": "JWT",
+      "endpoints": [
+        {
+          "method": "POST",
+          "path": "/tenants/{tenantId}/bookings/{appointmentId}/cancel",
+          "summary": "Cancel a confirmed appointment — validates policy window, releases slot, triggers refund and notifications",
+          "relatedRequirement": "FR005",
+          "roles": ["customer (own appointment)", "tenant_admin"],
+          "requestBody": { "reason": "string (optional)" },
+          "responses": {
+            "200": "Cancellation accepted — slot release and notifications dispatched asynchronously",
+            "409": "Cancellation window expired (past cancellation_hours threshold)",
+            "404": "Appointment not found",
+            "422": "Appointment not in cancellable state"
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/tenants/{tenantId}/bookings/{appointmentId}/reschedule",
+          "summary": "Reschedule an appointment to a new slot — atomic: confirm new slot first, then release original",
+          "relatedRequirement": "FR006",
+          "roles": ["customer (own appointment)", "tenant_admin"],
+          "requestBody": { "newSlotDate": "YYYY-MM-DD", "newSlotStart": "HH:mm", "staffId": "UUID (optional)" },
+          "responses": {
+            "200": "Reschedule confirmed — original slot released",
+            "409": "New slot unavailable — original appointment unchanged",
+            "404": "Appointment not found"
+          }
+        }
+      ]
+    },
+    {
+      "service": "dashboard-service",
+      "baseUrl": "/api/v1",
+      "authRequired": "JWT",
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/tenants/{tenantId}/dashboard",
+          "summary": "Serve the tenant's daily operational dashboard from the pre-aggregated materialized view",
+          "relatedRequirement": "FR008",
+          "roles": ["tenant_admin"],
+          "queryParams": { "date": "YYYY-MM-DD (optional — defaults to today)" },
+          "responses": { "200": "DashboardView object: confirmed/cancelled/rescheduled counts, revenue, peak_hour, last_updated_at" },
+          "performanceTarget": "p95 < 200ms (NFR006)"
+        },
+        {
+          "method": "GET",
+          "path": "/tenants/{tenantId}/analytics/alerts",
+          "summary": "List recent analytics alerts (velocity spikes, cancellation rate alerts) for the tenant",
+          "relatedRequirement": "FR009",
+          "roles": ["tenant_admin"],
+          "responses": { "200": "Array of recent alert events with metadata" }
+        }
+      ]
+    },
+    {
+      "service": "ops-service",
+      "baseUrl": "/api/v1/ops",
+      "authRequired": "JWT with role=platform_operator",
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/dlq",
+          "summary": "List DLQ entries filterable by tenant_id, event_type, failure_reason",
+          "relatedRequirement": "FR010",
+          "roles": ["platform_operator"],
+          "queryParams": { "tenantId": "UUID (optional)", "eventType": "string (optional)", "failureReason": "string (optional)", "page": "integer", "pageSize": "integer" },
+          "responses": { "200": "Paginated DLQ entry list with full payload and failure metadata" }
+        },
+        {
+          "method": "POST",
+          "path": "/dlq/{entryId}/requeue",
+          "summary": "Re-queue a DLQ entry for reprocessing (optionally with corrected payload)",
+          "relatedRequirement": "FR010",
+          "roles": ["platform_operator"],
+          "requestBody": { "correctedPayload": "object (optional)", "correctionNote": "string (required)" },
+          "responses": { "200": "Event re-queued; emits dlq.event_requeued", "404": "DLQ entry not found" }
+        },
+        {
+          "method": "POST",
+          "path": "/dlq/{entryId}/discard",
+          "summary": "Permanently discard a DLQ entry with audit log entry",
+          "relatedRequirement": "FR010",
+          "roles": ["platform_operator"],
+          "requestBody": { "discardReason": "string (required)" },
+          "responses": { "200": "Entry discarded; emits dlq.event_discarded", "404": "DLQ entry not found" }
+        },
+        {
+          "method": "POST",
+          "path": "/replay",
+          "summary": "Trigger an event replay job for a tenant",
+          "relatedRequirement": "FR011",
+          "roles": ["platform_operator"],
+          "requestBody": { "tenantId": "UUID (required)", "fromDate": "ISO 8601 date (optional)", "toDate": "ISO 8601 date (optional)", "eventTypes": ["string"] , "targetService": "string (required)" },
+          "responses": { "202": "Replay job queued — returns jobId", "409": "Replay already in progress for this tenant" }
+        },
+        {
+          "method": "GET",
+          "path": "/replay/{jobId}",
+          "summary": "Get the status and progress of a replay job",
+          "relatedRequirement": "FR011",
+          "roles": ["platform_operator"],
+          "responses": { "200": "Replay job status: queued/running/completed/failed with event count and error log" }
+        },
+        {
+          "method": "POST",
+          "path": "/tenants/{tenantId}/export",
+          "summary": "Initiate a full tenant data export — delivers signed S3 URL to verified owner email",
+          "relatedRequirement": "FR012",
+          "roles": ["tenant_admin", "platform_operator"],
+          "responses": { "202": "Export job queued — tenant receives email when ready", "409": "Export already in progress" }
+        },
+        {
+          "method": "POST",
+          "path": "/tenants/{tenantId}/suspend",
+          "summary": "Suspend a tenant — immediately halts new bookings, preserves read access",
+          "relatedRequirement": "FR013",
+          "roles": ["platform_operator"],
+          "requestBody": { "reason": "string (required)" },
+          "responses": { "200": "Tenant suspended; emits tenant.suspended" }
+        },
+        {
+          "method": "POST",
+          "path": "/tenants/{tenantId}/deprovision",
+          "summary": "Initiate deprovisioning — requires tenant to be suspended for >= 30 days",
+          "relatedRequirement": "FR013",
+          "roles": ["platform_operator"],
+          "requestBody": { "reason": "string (required)", "confirmedBy": "string (operator email)" },
+          "responses": { "200": "Deprovisioning initiated; emits tenant.deprovisioned", "409": "Tenant not suspended or 30-day window not elapsed" }
+        }
+      ]
+    }
+  ]
+}

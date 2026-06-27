@@ -1,0 +1,174 @@
+{
+  "_ai": "AI fills this. Derived from: functional-requirements.json + domain.json + user-journeys.json. Do not edit manually.",
+  "boundedContexts": [
+    {
+      "name": "Tenant Management",
+      "description": "Owns the Tenant aggregate lifecycle: registration, configuration, staff roster, service catalogue, suspension, and deprovisioning. The authoritative source for all tenant metadata and config.",
+      "entities": ["Tenant", "TenantConfig", "Staff", "WorkingHours", "StaffBlock", "Service"],
+      "service": "tenant-service",
+      "publishes": [
+        "tenant.registered",
+        "tenant.provisioned",
+        "tenant.config.updated",
+        "tenant.suspended",
+        "tenant.deprovisioned",
+        "staff.created",
+        "staff.updated",
+        "staff.deactivated",
+        "service.created",
+        "service.updated",
+        "service.deactivated"
+      ],
+      "subscribes": [],
+      "externalDependencies": ["Stripe (billing subscription activation on tenant.registered)"],
+      "patternNotes": "Pub/Sub fan-out on tenant.provisioned — billing-service, notification-service, and dashboard-service each subscribe independently. Status machine enforces Tenant lifecycle transitions."
+    },
+    {
+      "name": "Booking",
+      "description": "Owns the appointment booking saga. Orchestrates the atomic sequence: lock slot → charge payment → write appointment.confirmed. Compensates synchronously on any step failure. Enforces idempotency via booking_idempotency table.",
+      "entities": ["Appointment", "AppointmentEvent", "SlotLock", "Payment"],
+      "service": "booking-command-service",
+      "publishes": [
+        "appointment.requested",
+        "appointment.confirmed",
+        "appointment.failed"
+      ],
+      "subscribes": [],
+      "externalDependencies": [
+        "availability-service (slot reservation RPC)",
+        "payment-service (payment capture RPC)",
+        "outbox-relay (event publication)"
+      ],
+      "patternNotes": "Saga Orchestration. The booking-command-service is the single coordinator — it calls availability-service and payment-service synchronously and rolls back on failure. Idempotent Consumer via booking_idempotency table with unique constraint on idempotency_key (BR006). Transactional Outbox ensures events are published exactly when the DB transaction commits."
+    },
+    {
+      "name": "Availability",
+      "description": "Computes and serves open booking slots for a tenant's staff. Derives availability from working hours, existing confirmed appointments, and manual staff blocks. Enforces the booking window and working hours constraints.",
+      "entities": ["Slot", "SlotLock", "WorkingHours", "StaffBlock"],
+      "service": "availability-service",
+      "publishes": [],
+      "subscribes": [
+        "appointment.confirmed (to remove booked slots from availability cache)",
+        "appointment.cancelled (to restore slot to availability)",
+        "staff.updated (to refresh working hours)",
+        "service.updated (to refresh durations)"
+      ],
+      "externalDependencies": ["ElastiCache Redis (slot availability cache, keyed by tenant_id:staff_id:date)"],
+      "patternNotes": "Read-heavy, latency-critical. Slot computation result cached in Redis per (tenant_id, staff_id, date). Cache invalidated on appointment.confirmed and appointment.cancelled events. Enforces booking window (BR010) and working hours (BR003). p95 target < 500ms."
+    },
+    {
+      "name": "Cancellation",
+      "description": "Owns the appointment cancellation and rescheduling sagas. Choreographed: each step (slot release, refund, notification) emits its own event and proceeds independently. Slot is always released regardless of refund outcome.",
+      "entities": ["Appointment", "AppointmentEvent", "Payment"],
+      "service": "cancellation-saga-service",
+      "publishes": [
+        "appointment.cancelled",
+        "appointment.rescheduled",
+        "appointment.slot_released",
+        "payment.refund_requested",
+        "payment.refund_failed"
+      ],
+      "subscribes": [
+        "payment.refund_completed",
+        "payment.refund_failed"
+      ],
+      "externalDependencies": ["payment-service (refund initiation)"],
+      "patternNotes": "Saga Choreography. Enforces cancellation policy window (BR002) before emitting appointment.cancelled. Refund failure routes to DLQ — slot release and customer notification proceed regardless (BR009). Rescheduling is implemented as: confirm new slot → cancel old slot, so original booking is never disrupted if new slot is unavailable."
+    },
+    {
+      "name": "Payment",
+      "description": "Handles payment capture and refund processing via an external payment provider (Stripe). Called synchronously by the Booking saga and asynchronously by the Cancellation saga for refunds.",
+      "entities": ["Payment"],
+      "service": "payment-service",
+      "publishes": [
+        "payment.captured",
+        "payment.capture_failed",
+        "payment.refund_completed",
+        "payment.refund_failed"
+      ],
+      "subscribes": [
+        "payment.refund_requested"
+      ],
+      "externalDependencies": ["Stripe (payment capture, refund APIs)"],
+      "patternNotes": "Acts as an anti-corruption layer over Stripe. Payment records retained 7 years (BR012). Failed refunds route to DLQ for manual ops resolution."
+    },
+    {
+      "name": "Notification",
+      "description": "Async consumer of appointment lifecycle events. Dispatches email, SMS, and WhatsApp communications to customers and staff. Entirely decoupled — failure never propagates to booking operations.",
+      "entities": ["Notification"],
+      "service": "notification-service",
+      "publishes": [
+        "notification.sent",
+        "notification.failed",
+        "notification.dlq_routed"
+      ],
+      "subscribes": [
+        "appointment.requested",
+        "appointment.confirmed",
+        "appointment.cancelled",
+        "appointment.rescheduled",
+        "tenant.provisioned"
+      ],
+      "externalDependencies": [
+        "SendGrid (email — Starter, Pro, Enterprise)",
+        "Twilio SMS (Pro, Enterprise)",
+        "WhatsApp Business API (Enterprise)"
+      ],
+      "patternNotes": "Event-Carried State Transfer — all notification content is derived from the event payload; no back-calls to booking services. Retried up to 4 times with exponential backoff. After retry exhaustion, event routes to DLQ and ops alert fires (FR007, BR007)."
+    },
+    {
+      "name": "Dashboard & Analytics",
+      "description": "CQRS read side. Maintains the per-tenant DashboardView materialized view updated incrementally from booking events. Runs stream processing for anomaly detection (velocity spikes, cancellation rate alerts).",
+      "entities": ["DashboardView"],
+      "service": "dashboard-service",
+      "publishes": [
+        "analytics.velocity_spike_detected",
+        "analytics.cancellation_rate_alert"
+      ],
+      "subscribes": [
+        "appointment.confirmed",
+        "appointment.cancelled",
+        "appointment.rescheduled",
+        "appointment.no_show"
+      ],
+      "externalDependencies": ["Apache Flink or AWS Kinesis Data Analytics (stream processing for anomaly detection)"],
+      "patternNotes": "CQRS. DashboardView is pre-aggregated and O(1) to read (p95 < 200ms). Fully rebuildable from event replay. Anomaly detection: booking velocity spike (>3x 5-min average) and cancellation rate (>30% last 50 bookings) trigger alerts within 60 seconds."
+    },
+    {
+      "name": "Operations",
+      "description": "Internal platform operations: DLQ triage, event replay, tenant data export, suspension, and deprovisioning. Used exclusively by Platform Operators (P4).",
+      "entities": ["AuditLog"],
+      "service": "ops-service",
+      "publishes": [
+        "dlq.event_requeued",
+        "dlq.event_discarded",
+        "replay.started",
+        "replay.completed",
+        "tenant.export_ready"
+      ],
+      "subscribes": [
+        "notification.dlq_routed",
+        "payment.refund_failed",
+        "booking.failed"
+      ],
+      "externalDependencies": [
+        "S3 (tenant data export archives, signed URL delivery)",
+        "SQS DLQ (failed event inspection and re-queue)"
+      ],
+      "patternNotes": "Replay Pattern — re-publishes historical events for a tenant in order, allowing dashboard-service and other consumers to rebuild state idempotently. Replay scoped to (tenant_id, date_range, event_ids). Export generates a signed S3 URL valid for 24 hours sent to verified owner email only (FR012)."
+    },
+    {
+      "name": "Outbox Relay",
+      "description": "Cross-cutting infrastructure concern. Polls the outbox table and publishes events to SNS, guaranteeing at-least-once delivery without dual-write risk.",
+      "entities": [],
+      "service": "outbox-relay-service",
+      "publishes": ["(all events written to outbox table)"],
+      "subscribes": [],
+      "externalDependencies": [
+        "PostgreSQL outbox table (polling)",
+        "SNS (event publication)"
+      ],
+      "patternNotes": "Transactional Outbox. Events are written to the outbox in the same DB transaction as the state change. Relay polls the outbox and publishes to SNS, then marks rows as published. SQS retains unprocessed messages for up to 14 days (NFR003)."
+    }
+  ]
+}

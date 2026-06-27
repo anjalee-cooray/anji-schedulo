@@ -1,0 +1,157 @@
+{
+  "_ai": "AI fills this. Derived from: non-functional-requirements.json + functional-requirements.json + business-rules.json. Do not edit manually.",
+  "architecture": {
+    "style": "Event-Driven Microservices",
+    "hybridApproach": "Synchronous saga orchestration for the booking write path (latency-critical, requires atomic compensation) combined with async choreography for cancellation and all downstream fan-out (notifications, analytics, dashboard updates). The read path uses CQRS with pre-aggregated materialized views.",
+    "corePatterns": [
+      {
+        "pattern": "Event Sourcing",
+        "usedFor": "Appointment aggregate. Current state is derived by replaying the ordered AppointmentEvent log. Enables full audit trail, event replay for view rebuilds, and decoupled downstream consumers."
+      },
+      {
+        "pattern": "Transactional Outbox",
+        "usedFor": "Guaranteed at-least-once event delivery. Events are written to an outbox table in the same DB transaction as the state change. The outbox-relay-service polls and publishes to SNS, eliminating dual-write risk."
+      },
+      {
+        "pattern": "Saga Orchestration",
+        "usedFor": "Booking creation (UJ002). booking-command-service coordinates the three-step saga (reserve slot → capture payment → confirm appointment) and applies synchronous compensation on any failure. Ensures BR004 — no partial bookings."
+      },
+      {
+        "pattern": "Saga Choreography",
+        "usedFor": "Appointment cancellation (UJ003). Each step (slot release, refund, notification) reacts to the previous step's event independently. Slot release is never blocked by refund failure (BR009)."
+      },
+      {
+        "pattern": "CQRS",
+        "usedFor": "Dashboard and analytics read path. Writes go to the event store; reads are served from the pre-aggregated DashboardView materialized view. Enables p95 < 200ms dashboard reads independent of booking history depth."
+      },
+      {
+        "pattern": "Idempotent Consumer",
+        "usedFor": "All SQS message consumers. Implemented via event_id watermarks in an inbox deduplication table per service. Ensures at-least-once delivery from SQS never produces duplicate side effects."
+      },
+      {
+        "pattern": "Inbox Pattern",
+        "usedFor": "booking-command-service deduplication of booking requests. booking_idempotency table with unique constraint on idempotency_key enforces BR006 — duplicate booking requests return the original result."
+      },
+      {
+        "pattern": "Event-Carried State Transfer",
+        "usedFor": "Notification Service. All notification content is derived from the event payload snapshot. notification-service never calls back into booking services, ensuring it is fully decoupled (BR007)."
+      },
+      {
+        "pattern": "Pub/Sub Fan-Out",
+        "usedFor": "SNS topic per event type with SQS subscriber queues per consuming service. Adding a new consumer requires only a new SQS subscription — the producer is never modified (NFR015)."
+      },
+      {
+        "pattern": "Pool Tenancy with Row-Level Security",
+        "usedFor": "Multi-tenancy model. All tenants share a single PostgreSQL cluster. RLS policies on every table enforce tenant_id isolation at the database layer, safe-by-default (null context returns zero rows). Enforces BR005."
+      },
+      {
+        "pattern": "Dead Letter Queue",
+        "usedFor": "Failed events after retry exhaustion are routed to a per-service DLQ. Platform operators inspect, correct, and re-queue or discard via the ops-service console. Enforces NFR016 (4-hour resolution SLA)."
+      },
+      {
+        "pattern": "Materialized View",
+        "usedFor": "DashboardView is a pre-aggregated table updated incrementally per booking event. Enables O(1) reads for the tenant dashboard independent of booking history volume."
+      }
+    ],
+    "services": [
+      {
+        "name": "api-gateway",
+        "responsibility": "Single ingress point. Terminates TLS, validates JWTs, sets tenant_id context, generates correlation_id, and routes requests to downstream services. Enforces per-tenant rate limits."
+      },
+      {
+        "name": "tenant-service",
+        "responsibility": "Tenant lifecycle management: registration, config, staff roster, service catalogue, suspension, deprovisioning. Authoritative source for all tenant metadata."
+      },
+      {
+        "name": "booking-command-service",
+        "responsibility": "Booking saga orchestrator. Coordinates slot reservation, payment capture, and appointment confirmation atomically. Enforces idempotency and saga compensation."
+      },
+      {
+        "name": "availability-service",
+        "responsibility": "Computes and serves open booking slots. Derives availability from working hours, confirmed appointments, and staff blocks. Enforces booking window and working hours constraints."
+      },
+      {
+        "name": "cancellation-saga-service",
+        "responsibility": "Cancellation and rescheduling saga coordinator. Validates cancellation policy, releases slots, triggers refunds, and emits events for downstream choreography."
+      },
+      {
+        "name": "payment-service",
+        "responsibility": "Anti-corruption layer over Stripe. Handles payment capture (synchronous, called by booking saga) and refund processing (async, via event subscription)."
+      },
+      {
+        "name": "notification-service",
+        "responsibility": "Async consumer of appointment lifecycle events. Dispatches email, SMS, and WhatsApp notifications. Fully decoupled — failure never propagates to booking operations."
+      },
+      {
+        "name": "dashboard-service",
+        "responsibility": "Maintains the DashboardView materialized read model. Runs stream processing for anomaly detection (velocity spikes, cancellation rate). Serves tenant dashboard API from pre-aggregated view."
+      },
+      {
+        "name": "ops-service",
+        "responsibility": "Internal platform operations for Platform Operators: DLQ inspection and re-queue, event replay, tenant data export, suspension, and deprovisioning."
+      },
+      {
+        "name": "outbox-relay-service",
+        "responsibility": "Polls the PostgreSQL outbox table and publishes events to SNS. Guarantees at-least-once delivery without dual-write risk across all services."
+      }
+    ],
+    "adrs": [
+      {
+        "id": "ADR001",
+        "title": "Event Sourcing for Appointment aggregate",
+        "status": "accepted",
+        "context": "Appointment state must be auditable, replayable, and recoverable without data loss. Corrupt or stale read models must be rebuildable.",
+        "decision": "Appointment state is stored as an ordered log of AppointmentEvent records. No mutable status column. Current state is computed by folding over the event log.",
+        "consequences": "Full audit trail by construction. Dashboard and analytics views are rebuildable from event replay. Adds complexity: queries require event log fold or pre-aggregated read model."
+      },
+      {
+        "id": "ADR002",
+        "title": "PostgreSQL with Row-Level Security for multi-tenancy",
+        "status": "accepted",
+        "context": "BR005 requires zero cross-tenant data leakage under any condition including application bugs. Schema-per-tenant was ruled out due to operational complexity at scale.",
+        "decision": "Single shared PostgreSQL cluster. RLS policies on every table enforce tenant_id isolation at the database layer. SET LOCAL app.tenant_id before every transaction. NULL context returns zero rows by default.",
+        "consequences": "Tenant isolation enforced at two layers (application + DB). Eliminates an entire class of cross-tenant data leakage bugs. Adds RLS policy maintenance overhead. Enterprise tenants get a dedicated cluster."
+      },
+      {
+        "id": "ADR003",
+        "title": "Saga Orchestration for booking, Choreography for cancellation",
+        "status": "accepted",
+        "context": "Booking requires atomic success-or-failure (BR004) with synchronous compensation. Cancellation requires slot release to be independent of refund outcome (BR009).",
+        "decision": "Booking uses Saga Orchestration: booking-command-service is the single coordinator, calls steps synchronously, compensates on failure. Cancellation uses Saga Choreography: each step reacts to the previous event independently.",
+        "consequences": "Booking path achieves atomic compensation. Cancellation path is resilient to payment provider failures. Orchestration adds a central coordination point; choreography requires careful event ordering documentation."
+      },
+      {
+        "id": "ADR004",
+        "title": "Transactional Outbox for guaranteed event delivery",
+        "status": "accepted",
+        "context": "Without the Outbox pattern, a service that writes to the DB and then publishes to SNS risks losing the event if the service crashes between the two operations.",
+        "decision": "Events are written to an outbox table in the same DB transaction as the state change. outbox-relay-service polls the table and publishes to SNS, then marks rows as published.",
+        "consequences": "At-least-once delivery guaranteed. Events are never lost between DB write and SNS publish. Adds polling latency (target < 1 second). Consumers must be idempotent."
+      },
+      {
+        "id": "ADR005",
+        "title": "SNS + SQS for Pub/Sub fan-out",
+        "status": "accepted",
+        "context": "Multiple services need to react to booking events independently. Direct service-to-service calls would couple producers to consumers.",
+        "decision": "SNS topic per event type. Each consumer subscribes with a dedicated SQS queue. New consumers added without modifying the producer.",
+        "consequences": "Fully decoupled consumers (NFR015). SQS provides 14-day message retention for consumer recovery (NFR003). FIFO queues per tenant ensure per-tenant ordering. Adds AWS infrastructure complexity."
+      },
+      {
+        "id": "ADR006",
+        "title": "CQRS with Materialized View for dashboard",
+        "status": "accepted",
+        "context": "Dashboard must respond in < 200ms (NFR006). Computing metrics on demand from appointment history at scale would violate this target.",
+        "decision": "Dashboard reads are served from a pre-aggregated DashboardView table, updated incrementally per booking event. Writes never touch the read model directly.",
+        "consequences": "O(1) dashboard reads regardless of booking history depth. Dashboard lag < 5 seconds under normal load (NFR008). View is rebuildable from event replay on corruption."
+      },
+      {
+        "id": "ADR007",
+        "title": "SQS FIFO with MessageGroupId per tenant for noisy-neighbour isolation",
+        "status": "accepted",
+        "context": "A single high-volume tenant must not degrade event processing for other tenants (NFR011).",
+        "decision": "SQS FIFO queues use tenant_id as MessageGroupId. Per-tenant throughput quotas enforced at API Gateway. Dedicated queues provisioned for Enterprise tenants.",
+        "consequences": "High-volume tenant processing is isolated per-group. Per-tenant ordering guaranteed within a queue. Adds queue partitioning complexity for Enterprise tier."
+      }
+    ]
+  }
+}

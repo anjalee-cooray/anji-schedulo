@@ -1,0 +1,253 @@
+{
+  "_ai": "AI fills this. Derived from: personas.json + functional-requirements.json + glossary.json. Do not edit manually.",
+  "domain": {
+    "name": "BookVault",
+    "description": "Multi-tenant appointment scheduling platform. Core domain is the appointment lifecycle within strict per-tenant data isolation. Every entity is scoped to a tenant_id enforced by RLS.",
+    "entities": [
+      {
+        "name": "Tenant",
+        "aggregateRoot": true,
+        "description": "A registered business on BookVault. Owns all configuration, staff, services, and appointments within its boundary. Every row in the system is scoped to a tenant_id enforced by RLS.",
+        "keyAttributes": [
+          "tenant_id",
+          "name",
+          "owner_email",
+          "plan",
+          "status",
+          "created_at"
+        ],
+        "children": ["TenantConfig", "Staff", "Service"],
+        "lifecycle": ["provisioning", "active", "suspended", "deprovisioned"],
+        "patternNote": "Root of the tenancy model. Status machine governs lifecycle transitions. tenant.provisioned event fans out to billing, notification, and config services on registration."
+      },
+      {
+        "name": "TenantConfig",
+        "aggregateRoot": false,
+        "description": "Operational parameters a tenant admin configures: cancellation policy window, forward booking window, max concurrent bookings per customer, and notification preferences.",
+        "keyAttributes": [
+          "tenant_id",
+          "cancellation_hours",
+          "booking_window_days",
+          "max_advance_bookings",
+          "notification_channels"
+        ],
+        "children": [],
+        "lifecycle": [],
+        "patternNote": "Value object child of Tenant. Mutations produce a tenant.config.updated event for downstream reconfiguration."
+      },
+      {
+        "name": "Appointment",
+        "aggregateRoot": true,
+        "description": "The core aggregate. A confirmed reservation between a customer and a staff member for a specific service at a specific time. Current state is derived by replaying the ordered event history — never from a status column.",
+        "keyAttributes": [
+          "appointment_id",
+          "tenant_id",
+          "customer_id",
+          "staff_id",
+          "service_id",
+          "slot_date",
+          "slot_start",
+          "slot_end",
+          "status",
+          "idempotency_key"
+        ],
+        "children": ["AppointmentEvent", "SlotLock", "Payment"],
+        "lifecycle": ["requested", "confirmed", "rescheduled", "cancelled", "completed", "no_show"],
+        "patternNote": "Event Sourcing. Fold over AppointmentEvent log to derive current state. Published via Transactional Outbox to SNS topic for fan-out to all downstream consumers."
+      },
+      {
+        "name": "AppointmentEvent",
+        "aggregateRoot": false,
+        "description": "An immutable record of a state transition in an Appointment's lifecycle. The event log is the system's source of truth for all derived views.",
+        "keyAttributes": [
+          "event_id",
+          "appointment_id",
+          "tenant_id",
+          "event_type",
+          "occurred_at",
+          "correlation_id",
+          "causation_id",
+          "payload"
+        ],
+        "children": [],
+        "lifecycle": [],
+        "patternNote": "Append-only. Written in the same DB transaction as the state change, then relayed to SNS via Transactional Outbox. Envelope must satisfy BR013 (tenant_id, event_id, correlation_id, occurred_at)."
+      },
+      {
+        "name": "SlotLock",
+        "aggregateRoot": false,
+        "description": "An exclusive reservation on a (tenant_id, staff_id, slot_date, slot_start) tuple placed at booking saga start. Prevents concurrent bookings of the same slot. Released on saga compensation or appointment confirmed.",
+        "keyAttributes": [
+          "lock_id",
+          "tenant_id",
+          "staff_id",
+          "slot_date",
+          "slot_start",
+          "appointment_id",
+          "held_at",
+          "released_at"
+        ],
+        "children": [],
+        "lifecycle": ["held", "released"],
+        "patternNote": "Unique DB constraint on (tenant_id, staff_id, slot_date, slot_start) WHERE released_at IS NULL. Core enforcement of BR001. Null released_at = active lock."
+      },
+      {
+        "name": "Staff",
+        "aggregateRoot": false,
+        "description": "An employee or contractor whose time is managed on the platform. Child of Tenant. Their working hours and blocks define the availability envelope for the Availability Service.",
+        "keyAttributes": [
+          "staff_id",
+          "tenant_id",
+          "name",
+          "email",
+          "status"
+        ],
+        "children": ["WorkingHours", "StaffBlock"],
+        "lifecycle": ["active", "inactive"],
+        "patternNote": "Child entity of Tenant aggregate. Deactivating a staff member does not cancel existing confirmed appointments."
+      },
+      {
+        "name": "WorkingHours",
+        "aggregateRoot": false,
+        "description": "The regular weekly schedule for a staff member. Used by the Availability Service as the outer boundary for open slot computation.",
+        "keyAttributes": [
+          "staff_id",
+          "tenant_id",
+          "day_of_week",
+          "start_time",
+          "end_time"
+        ],
+        "children": [],
+        "lifecycle": [],
+        "patternNote": "Value object. Slots outside working hours are never surfaced to customers (BR003)."
+      },
+      {
+        "name": "StaffBlock",
+        "aggregateRoot": false,
+        "description": "A manual period of unavailability set by a staff member or admin. Intersecting slots are excluded from the availability computation regardless of working hours.",
+        "keyAttributes": [
+          "block_id",
+          "staff_id",
+          "tenant_id",
+          "start_at",
+          "end_at",
+          "reason"
+        ],
+        "children": [],
+        "lifecycle": [],
+        "patternNote": "Subtracted from working hours in Availability Service slot generation."
+      },
+      {
+        "name": "Service",
+        "aggregateRoot": false,
+        "description": "A bookable offering defined by a tenant. Duration drives slot length; price drives payment amount. Child of Tenant.",
+        "keyAttributes": [
+          "service_id",
+          "tenant_id",
+          "name",
+          "duration_minutes",
+          "price_pence",
+          "currency",
+          "status"
+        ],
+        "children": [],
+        "lifecycle": ["active", "inactive"],
+        "patternNote": "Child entity of Tenant. duration_minutes determines how the Availability Service segments working hours into bookable slots."
+      },
+      {
+        "name": "Customer",
+        "aggregateRoot": false,
+        "description": "The person who booked an appointment. Stored as a snapshot on the appointment — not as a global entity — to minimise PII scope and simplify erasure.",
+        "keyAttributes": [
+          "customer_id",
+          "tenant_id",
+          "name",
+          "email",
+          "phone"
+        ],
+        "children": [],
+        "lifecycle": [],
+        "patternNote": "PII scoped per-tenant. Pseudonymised on GDPR right-to-erasure request. customer_id used for max_advance_bookings enforcement (BR008)."
+      },
+      {
+        "name": "Payment",
+        "aggregateRoot": false,
+        "description": "A payment or refund record tied to an appointment. Tracks the external provider reference and status independently from the appointment lifecycle.",
+        "keyAttributes": [
+          "payment_id",
+          "appointment_id",
+          "tenant_id",
+          "amount_pence",
+          "currency",
+          "status",
+          "provider_ref",
+          "captured_at",
+          "refunded_at"
+        ],
+        "children": [],
+        "lifecycle": ["pending", "captured", "refunded", "failed"],
+        "patternNote": "Retained for minimum 7 years per BR012. Refund failure routes to DLQ per BR009 — slot is released regardless."
+      },
+      {
+        "name": "Notification",
+        "aggregateRoot": false,
+        "description": "A communication dispatched to a customer or staff member at a lifecycle event. Content is derived entirely from the triggering event payload — no back-calls to booking services.",
+        "keyAttributes": [
+          "notification_id",
+          "tenant_id",
+          "appointment_id",
+          "recipient_type",
+          "recipient_address",
+          "channel",
+          "event_type",
+          "status",
+          "attempt_count",
+          "last_error",
+          "sent_at"
+        ],
+        "children": [],
+        "lifecycle": ["pending", "sent", "failed", "dlq"],
+        "patternNote": "Fully decoupled async consumer of appointment events. Failure never blocks the triggering booking operation (BR007). Retried up to 4 times with exponential backoff before routing to DLQ."
+      },
+      {
+        "name": "DashboardView",
+        "aggregateRoot": false,
+        "description": "A pre-aggregated materialized read model of a tenant's daily booking metrics. Updated incrementally per booking event and never queried from the write store.",
+        "keyAttributes": [
+          "tenant_id",
+          "date",
+          "confirmed_count",
+          "cancelled_count",
+          "rescheduled_count",
+          "no_show_count",
+          "net_revenue_pence",
+          "peak_hour",
+          "last_updated_at"
+        ],
+        "children": [],
+        "lifecycle": [],
+        "patternNote": "CQRS read model. O(1) reads regardless of booking history depth. Fully rebuildable from AppointmentEvent log via event replay."
+      },
+      {
+        "name": "AuditLog",
+        "aggregateRoot": false,
+        "description": "An immutable, append-only record of every write operation that modifies tenant-scoped data. Required for GDPR compliance and incident forensics.",
+        "keyAttributes": [
+          "audit_id",
+          "tenant_id",
+          "actor_id",
+          "actor_role",
+          "action",
+          "resource_type",
+          "resource_id",
+          "occurred_at",
+          "payload_hash",
+          "correlation_id"
+        ],
+        "children": [],
+        "lifecycle": [],
+        "patternNote": "INSERT-only PostgreSQL table. booking_app_user is limited to INSERT privilege only. Permanent retention per BR014."
+      }
+    ]
+  }
+}
