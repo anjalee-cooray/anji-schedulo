@@ -1,28 +1,189 @@
 {
-  "_fill": "YOU fill this. What must the product do? Each requirement gets an ID, a title, a description, and clear acceptance criteria.",
   "functionalRequirements": [
     {
       "id": "FR001",
-      "area": "Feature Area (e.g. User Management, Payments, Notifications)",
-      "title": "Short title of the requirement",
-      "description": "What the system must allow a user to do.",
+      "area": "Tenant Management",
+      "title": "Tenant self-service onboarding",
+      "description": "A new business can register, configure their profile, and become active without operator intervention.",
       "acceptanceCriteria": [
-        "Given [context], when [action], then [outcome]",
-        "Add one criterion per observable behaviour"
+        "Tenant can submit registration with business name, owner email, and plan selection",
+        "Billing subscription is activated automatically on registration",
+        "Welcome email is sent automatically on registration",
+        "Tenant status transitions to active once all provisioning steps confirm",
+        "Tenant can set business hours, services, and staff before going live"
       ],
-      "relatedBusinessRules": ["BR001"],
+      "relatedBusinessRules": ["BR005"],
       "relatedPersonas": ["P1"]
     },
     {
       "id": "FR002",
-      "area": "Feature Area",
-      "title": "Second requirement",
-      "description": "Description.",
+      "area": "Tenant Management",
+      "title": "Tenant configuration management",
+      "description": "A tenant admin can configure all operational parameters for their business.",
       "acceptanceCriteria": [
-        "Criterion 1"
+        "Admin can set business hours per staff member per day",
+        "Admin can create, update, and deactivate services",
+        "Admin can add, update, and remove staff members",
+        "Admin can set cancellation policy window in hours",
+        "Admin can set booking advance window in days",
+        "Admin can set max bookings per customer"
       ],
-      "relatedBusinessRules": [],
-      "relatedPersonas": ["P2"]
+      "relatedBusinessRules": ["BR002", "BR003", "BR008", "BR010"],
+      "relatedPersonas": ["P1"]
+    },
+    {
+      "id": "FR003",
+      "area": "Booking",
+      "title": "Customer slot browsing",
+      "description": "A customer can browse available slots for a tenant's services and staff.",
+      "acceptanceCriteria": [
+        "Customer can query available slots by service, date, and staff member",
+        "Available slots exclude confirmed bookings, staff blocks, and outside-hours periods",
+        "Slots beyond the tenant's booking window are not shown",
+        "Response time under 500ms"
+      ],
+      "relatedBusinessRules": ["BR003", "BR010"],
+      "relatedPersonas": ["P3"]
+    },
+    {
+      "id": "FR004",
+      "area": "Booking",
+      "title": "Appointment booking",
+      "description": "A customer can book an appointment through an atomic, compensatable saga.",
+      "acceptanceCriteria": [
+        "Booking request initiates availability check, payment (if required), and confirmation in sequence",
+        "If slot is unavailable, booking fails with a clear 409 response and no charge",
+        "If payment fails, slot reservation is released and booking fails with 402",
+        "Duplicate requests with the same idempotency key return the original result without re-processing",
+        "Customer receives confirmation notification within 30 seconds of booking"
+      ],
+      "relatedBusinessRules": ["BR001", "BR004", "BR006", "BR007", "BR008"],
+      "relatedPersonas": ["P3"]
+    },
+    {
+      "id": "FR005",
+      "area": "Booking",
+      "title": "Appointment cancellation",
+      "description": "A customer or staff member can cancel a confirmed appointment within the cancellation policy window.",
+      "acceptanceCriteria": [
+        "Cancellation outside policy window is rejected with a clear error",
+        "Cancellation within window triggers: refund (if applicable), slot release, notifications",
+        "Slot is released regardless of refund outcome",
+        "Customer and staff are notified of cancellation",
+        "Full appointment history including cancellation is preserved"
+      ],
+      "relatedBusinessRules": ["BR002", "BR009"],
+      "relatedPersonas": ["P2", "P3"]
+    },
+    {
+      "id": "FR006",
+      "area": "Booking",
+      "title": "Appointment rescheduling",
+      "description": "A customer can move a confirmed appointment to a new slot.",
+      "acceptanceCriteria": [
+        "Rescheduling atomically cancels the current slot and books the new slot",
+        "New slot availability is checked before releasing the original slot",
+        "If new slot is unavailable, original booking remains unchanged",
+        "Customer receives rescheduling confirmation notification",
+        "Appointment event history records the reschedule"
+      ],
+      "relatedBusinessRules": ["BR001", "BR004"],
+      "relatedPersonas": ["P3"]
+    },
+    {
+      "id": "FR007",
+      "area": "Notifications",
+      "title": "Lifecycle notifications",
+      "description": "Customers and staff receive automated communications at key appointment lifecycle events.",
+      "acceptanceCriteria": [
+        "Notifications sent at: booking requested, confirmed, cancelled, rescheduled, upcoming reminder",
+        "All notification content derived from event snapshot — no back-calls to booking services",
+        "Failed deliveries retried up to 4 times with exponential backoff",
+        "After 4 failures, event routes to DLQ and ops alert is raised",
+        "Delivery failures never delay or cancel the triggering booking operation"
+      ],
+      "relatedBusinessRules": ["BR007", "BR013"],
+      "relatedPersonas": ["P2", "P3"]
+    },
+    {
+      "id": "FR008",
+      "area": "Dashboard",
+      "title": "Tenant operational dashboard",
+      "description": "A tenant admin can view a real-time summary of their booking operations.",
+      "acceptanceCriteria": [
+        "Dashboard shows: today's bookings, confirmed/cancelled/rescheduled counts, net revenue, cancellation rate, peak hour",
+        "Dashboard data reflects events within 5 seconds under normal load",
+        "Dashboard response time under 200ms (served from materialized view)",
+        "Dashboard can be fully rebuilt from event history if corrupted"
+      ],
+      "relatedPersonas": ["P1"]
+    },
+    {
+      "id": "FR009",
+      "area": "Analytics",
+      "title": "Stream processing alerts",
+      "description": "The platform continuously monitors per-tenant booking patterns and surfaces anomaly alerts.",
+      "acceptanceCriteria": [
+        "Booking velocity spike (> 3x historical average in 5-minute window) triggers alert",
+        "Cancellation rate > 30% over last 50 bookings triggers alert",
+        "Peak hour data updated continuously and available to tenant admins",
+        "Alerts delivered to tenant admin and platform operator within 60 seconds of detection"
+      ],
+      "relatedPersonas": ["P1", "P4"]
+    },
+    {
+      "id": "FR010",
+      "area": "Operations",
+      "title": "Dead letter queue triage",
+      "description": "Platform operators can inspect, correct, and reprocess failed events.",
+      "acceptanceCriteria": [
+        "Failed events routed to DLQ after retry exhaustion with full payload preserved",
+        "Ops console shows DLQ entries filterable by tenant_id, event_type, failure_reason",
+        "Operator can re-queue a corrected event or discard with audit log entry",
+        "DLQ entry triggers automated ops alert within 5 minutes"
+      ],
+      "relatedPersonas": ["P4"]
+    },
+    {
+      "id": "FR011",
+      "area": "Operations",
+      "title": "Tenant event replay",
+      "description": "Platform operators can replay historical events for a tenant to rebuild derived views.",
+      "acceptanceCriteria": [
+        "Replay can be scoped to a tenant, date range, or specific event IDs",
+        "Target services rebuild state idempotently from replayed events",
+        "Replay does not affect live booking operations",
+        "Replay job status is tracked and visible to operators"
+      ],
+      "relatedPersonas": ["P4"]
+    },
+    {
+      "id": "FR012",
+      "area": "Tenant Lifecycle",
+      "title": "Tenant data export",
+      "description": "A tenant admin can request a full export of their data at any time.",
+      "acceptanceCriteria": [
+        "Export includes: config, staff, services, appointment events, payments, notifications, analytics",
+        "Export is scoped strictly to the requesting tenant",
+        "Download link delivered to verified owner email only",
+        "Signed URL expires after 24 hours"
+      ],
+      "relatedBusinessRules": ["BR005", "BR014"],
+      "relatedPersonas": ["P1"]
+    },
+    {
+      "id": "FR013",
+      "area": "Tenant Lifecycle",
+      "title": "Tenant suspension and deprovisioning",
+      "description": "Platform operators can suspend and deprovision tenants in a controlled sequence.",
+      "acceptanceCriteria": [
+        "Suspension immediately halts new bookings while preserving read access",
+        "Deprovisioning requires explicit operator action after 30-day data export window",
+        "Data retained for 90 days post-deprovisioning before hard deletion",
+        "PII pseudonymised on customer erasure requests"
+      ],
+      "relatedBusinessRules": ["BR011", "BR012"],
+      "relatedPersonas": ["P4"]
     }
   ]
 }

@@ -1,10 +1,244 @@
 {
   "_ai": "AI fills this. Derived from: architecture.json + infrastructure.json + non-functional-requirements.json. Do not edit manually.",
   "operations": {
-    "dlq": {},
-    "replay": {},
-    "backups": {},
-    "incidentResponse": {},
-    "maintenanceWindows": {}
+    "dlq": {
+      "description": "Every SQS FIFO consumer queue has a paired Dead Letter Queue (DLQ). Messages are routed to the DLQ automatically by SQS after maxReceiveCount=4 failed processing attempts. The Platform Operator (P4) monitors all DLQs via the ops-service console. DLQ entries are never silently dropped — each entry generates an audit log record and persists for 14 days. The operator either re-queues the corrected event or explicitly discards it with a documented reason (FR010, NFR016).",
+      "queues": [
+        {
+          "name": "notification-service-tenant-provisioned-queue-dlq",
+          "sourceQueue": "notification-service-tenant-provisioned-queue",
+          "consumerService": "notification-service",
+          "eventType": "tenant.provisioned"
+        },
+        {
+          "name": "billing-service-tenant-provisioned-queue-dlq",
+          "sourceQueue": "billing-service-tenant-provisioned-queue",
+          "consumerService": "billing-service",
+          "eventType": "tenant.provisioned"
+        },
+        {
+          "name": "booking-command-service-tenant-configured-queue-dlq",
+          "sourceQueue": "booking-command-service-tenant-configured-queue",
+          "consumerService": "booking-command-service",
+          "eventType": "tenant.configured"
+        },
+        {
+          "name": "availability-service-tenant-configured-queue-dlq",
+          "sourceQueue": "availability-service-tenant-configured-queue",
+          "consumerService": "availability-service",
+          "eventType": "tenant.configured"
+        },
+        {
+          "name": "booking-command-service-tenant-suspended-queue-dlq",
+          "sourceQueue": "booking-command-service-tenant-suspended-queue",
+          "consumerService": "booking-command-service",
+          "eventType": "tenant.suspended"
+        },
+        {
+          "name": "notification-service-appointment-confirmed-queue-dlq",
+          "sourceQueue": "notification-service-appointment-confirmed-queue",
+          "consumerService": "notification-service",
+          "eventType": "appointment.confirmed"
+        },
+        {
+          "name": "dashboard-service-appointment-confirmed-queue-dlq",
+          "sourceQueue": "dashboard-service-appointment-confirmed-queue",
+          "consumerService": "dashboard-service",
+          "eventType": "appointment.confirmed"
+        },
+        {
+          "name": "analytics-service-appointment-confirmed-queue-dlq",
+          "sourceQueue": "analytics-service-appointment-confirmed-queue",
+          "consumerService": "analytics-service",
+          "eventType": "appointment.confirmed"
+        },
+        {
+          "name": "availability-service-appointment-confirmed-queue-dlq",
+          "sourceQueue": "availability-service-appointment-confirmed-queue",
+          "consumerService": "availability-service",
+          "eventType": "appointment.confirmed"
+        },
+        {
+          "name": "payment-service-appointment-cancelled-queue-dlq",
+          "sourceQueue": "payment-service-appointment-cancelled-queue",
+          "consumerService": "payment-service",
+          "eventType": "appointment.cancelled",
+          "note": "Refund_failed events routed here after retry exhaustion (BR009). Manual operator resolution required — see payment refund runbook."
+        },
+        {
+          "name": "notification-service-appointment-cancelled-queue-dlq",
+          "sourceQueue": "notification-service-appointment-cancelled-queue",
+          "consumerService": "notification-service",
+          "eventType": "appointment.cancelled"
+        },
+        {
+          "name": "dashboard-service-appointment-cancelled-queue-dlq",
+          "sourceQueue": "dashboard-service-appointment-cancelled-queue",
+          "consumerService": "dashboard-service",
+          "eventType": "appointment.cancelled"
+        },
+        {
+          "name": "notification-service-appointment-rescheduled-queue-dlq",
+          "sourceQueue": "notification-service-appointment-rescheduled-queue",
+          "consumerService": "notification-service",
+          "eventType": "appointment.rescheduled"
+        },
+        {
+          "name": "dashboard-service-appointment-rescheduled-queue-dlq",
+          "sourceQueue": "dashboard-service-appointment-rescheduled-queue",
+          "consumerService": "dashboard-service",
+          "eventType": "appointment.rescheduled"
+        },
+        {
+          "name": "booking-command-service-payment-captured-queue-dlq",
+          "sourceQueue": "booking-command-service-payment-captured-queue",
+          "consumerService": "booking-command-service",
+          "eventType": "payment.captured",
+          "note": "If payment.captured lands in DLQ, the booking saga is stalled — appointment is in requested state, payment is charged but not confirmed. Operator must manually advance or compensate."
+        },
+        {
+          "name": "booking-command-service-payment-failed-queue-dlq",
+          "sourceQueue": "booking-command-service-payment-failed-queue",
+          "consumerService": "booking-command-service",
+          "eventType": "payment.failed"
+        },
+        {
+          "name": "ops-service-notification-failed-queue-dlq",
+          "sourceQueue": "ops-service-notification-failed-queue",
+          "consumerService": "ops-service",
+          "eventType": "notification.failed"
+        }
+      ],
+      "monitoring": {
+        "alertName": "ALT003 — DLQ Depth Non-Zero",
+        "condition": "sum(dlq_depth_total) > 0",
+        "alertThreshold": "Any single message in any DLQ",
+        "alertDelay": "5 minutes after first message arrives in DLQ"
+      },
+      "resolutionSla": "4 hours from alert trigger to event processed or explicitly discarded (NFR016). P2 severity — PagerDuty notification to on-call operator.",
+      "operatorActions": [
+        "1. Receive ALT003 alert via PagerDuty and Slack #incidents",
+        "2. Open ops console: filter DLQ entries by queue_name, tenant_id, and event_type",
+        "3. Inspect full event payload — identify failure_reason from event body or SQS message attributes",
+        "4. Diagnose root cause: malformed payload, downstream service unavailable, RLS rejection, schema mismatch, or external provider error",
+        "5a. If correctable: edit payload in ops console, re-queue to source queue (ops-service writes corrected payload to SQS, SQS delivers to consumer)",
+        "5b. If not correctable (e.g. already manually resolved, stale event): discard with documented reason — ops-service writes AuditLog entry (BR014)",
+        "6. Confirm DLQ depth returns to zero (ALT003 resolves)",
+        "7. Write incident summary in Slack #incidents and tag the relevant runbook"
+      ],
+      "idempotencySafety": "All consumers implement the Idempotent Consumer pattern via InboxRecord deduplication on event_id (NFR009). Re-queuing an already-processed event is always safe — the consumer will detect the duplicate in inbox_records and skip processing without side effects. This also applies to replay scenarios."
+    },
+    "replay": {
+      "description": "Event replay allows the Platform Operator to re-publish all historical AppointmentEvents for a tenant from the PostgreSQL event store (appointment_events table) to SNS. Downstream consumers (dashboard-service, analytics-service, notification-service) rebuild their derived state idempotently by processing the replayed events. Replay does not affect live booking operations — the event bus carries both live and replay events concurrently, and consumers distinguish them by the replay_job_id field in the envelope (FR011).",
+      "triggers": [
+        "dashboard-service TenantDashboardView is corrupted or shows incorrect aggregates after a bug fix is deployed",
+        "analytics-service AnalyticsSummary has a data gap due to a consumer outage",
+        "A schema migration incorrectly updated appointment event payloads and downstream projections need rebuilding",
+        "A new consumer service is added and needs to ingest all historical events to build initial state",
+        "Cross-tenant isolation incident investigation requires auditing all events for a tenant over a date range"
+      ],
+      "scope": {
+        "options": [
+          {
+            "type": "full_tenant",
+            "description": "Re-publish all AppointmentEvents for a tenant from the beginning of time. Used for full view rebuilds."
+          },
+          {
+            "type": "date_range",
+            "description": "Re-publish AppointmentEvents for a tenant between a start date and end date (inclusive). Used to fill a specific gap."
+          },
+          {
+            "type": "event_type",
+            "description": "Re-publish only events of a specific type (e.g. only appointment.confirmed events) for a tenant. Used to rebuild a specific view component."
+          },
+          {
+            "type": "specific_ids",
+            "description": "Re-publish specific AppointmentEvents by event_id list. Used for surgical correction of a small number of events."
+          }
+        ]
+      },
+      "implementation": {
+        "source": "appointment_events table in PostgreSQL. ops-service queries: SELECT * FROM appointment_events WHERE tenant_id = $1 [AND occurred_at BETWEEN $2 AND $3] [AND event_type = $4] [AND event_id = ANY($5)] ORDER BY occurred_at ASC",
+        "mechanism": "ops-service reads events in batches of 100 and re-publishes each event to its corresponding SNS topic (the same topic as live events). Each replayed event envelope includes an additional replay_job_id field (UUID of the ReplayJob) so consumers can log and trace replay traffic distinctly.",
+        "liveIsolation": "Replay events enter the same SQS queues as live events. Consumer idempotency (InboxRecord) ensures that events already processed are skipped regardless of whether they arrive from live traffic or replay. Live bookings continue unaffected during replay — there is no queue pause or consumer switch required.",
+        "rateLimiting": "ops-service publishes replay events at a maximum rate of 500 events/second to avoid overwhelming consumers and SNS throughput limits. Configurable via ops console before starting replay."
+      },
+      "jobTracking": {
+        "states": [
+          { "state": "queued", "description": "Replay job created by operator; not yet started" },
+          { "state": "running", "description": "ops-service is actively reading and publishing events" },
+          { "state": "completed", "description": "All in-scope events published; ReplayJob.events_published recorded" },
+          { "state": "failed", "description": "ops-service encountered an unrecoverable error during replay; error_message populated" },
+          { "state": "cancelled", "description": "Operator manually cancelled the replay before completion" }
+        ],
+        "visibility": "ReplayJob status is visible in the ops console and via GET /ops/replay/{job_id}. replay.started and replay.completed events are published to SNS for Grafana log ingestion."
+      }
+    },
+    "backups": {
+      "database": {
+        "tool": "AWS RDS automated backup (built-in) + AWS Backup (policy-based cross-region copy)",
+        "schedule": "Automated daily snapshot at 03:00 UTC (lowest traffic window; maintenance window Sunday 02:00–04:00 UTC)",
+        "retention": "7 days for automated snapshots; manual snapshots retained indefinitely (taken before every schema migration)",
+        "walArchiving": "WAL archiving enabled. PostgreSQL WAL segments archived to S3 every 5 minutes. Enables point-in-time recovery to any second within the retention window.",
+        "pointInTimeRecovery": "Enabled. Target time can be any timestamp within the last 7 days (limited by WAL retention).",
+        "rpo": "5 minutes (WAL archiving frequency)",
+        "rto": "30 minutes (RDS restore from snapshot or PITR to a new instance; DNS failover via Route 53; service reconnection via PgBouncer reconfiguration)",
+        "crossRegion": "Nightly snapshot copied to eu-central-1 (Frankfurt) via AWS Backup cross-region copy policy. Retained for 30 days in eu-central-1. Used for disaster recovery if eu-west-1 is unavailable.",
+        "encryptionAtRest": "AES-256 via AWS KMS (backups inherit the KMS key from the source RDS instance)"
+      },
+      "objectStorage": {
+        "versioning": "S3 versioning enabled on all buckets (anji-schedulo-tenant-exports, anji-schedulo-event-archives, anji-schedulo-audit-logs). Accidental overwrites or deletions recoverable from version history.",
+        "lifecyclePolicies": {
+          "tenantExports": "Objects expire after 90 days (BR012 data retention). Individual signed URLs expire after 24 hours (FR012).",
+          "eventArchives": "Standard storage for 12 months; transition to S3 Glacier Flexible Retrieval after 12 months; payment-related archives retained for 7 years then deleted (BR012).",
+          "auditLogs": "S3 Object Lock (Compliance mode, WORM). No deletion ever permitted — retained permanently (BR012, BR014)."
+        }
+      },
+      "eventStore": {
+        "description": "The appointment_events table in PostgreSQL is the primary source of truth for all appointment history. It is protected by the same RDS automated backup strategy as all other tables (RPO 5 minutes). Additionally, ops-service exports a complete copy of appointment_events to anji-schedulo-event-archives S3 bucket on a monthly basis. This S3 copy serves as a secondary recovery source if the RDS instance is unrecoverable and the cross-region replica is also unavailable.",
+        "exportSchedule": "First day of each month at 04:00 UTC",
+        "exportFormat": "NDJSON (one event per line, ordered by tenant_id, occurred_at ASC)"
+      }
+    },
+    "incidentResponse": {
+      "severities": [
+        {
+          "level": "P1",
+          "definition": "Complete loss of core booking functionality; cross-tenant data isolation violation; data loss; platform-wide availability below 99%; security incident",
+          "responseTimeTarget": "15 minutes from alert to active operator engagement",
+          "escalation": "On-call engineer via PagerDuty; secondary engineer page after 15 minutes without acknowledgement; engineering lead notified at 30 minutes",
+          "runbookLocation": "ops-service/docs/runbooks/ (ALT001, ALT002, ALT005)",
+          "communicationChannel": "Slack #incidents; status page update within 30 minutes"
+        },
+        {
+          "level": "P2",
+          "definition": "Degraded booking performance (p95 > 3s); DLQ growth; outbox relay lag; single tenant functional outage; notification delivery failure affecting > 10% of messages",
+          "responseTimeTarget": "1 hour from alert to active investigation",
+          "escalation": "On-call engineer via PagerDuty; engineering lead if not resolved within 2 hours",
+          "runbookLocation": "ops-service/docs/runbooks/ (ALT003, ALT004, ALT006, ALT007)",
+          "communicationChannel": "Slack #incidents"
+        },
+        {
+          "level": "P3",
+          "definition": "Individual tenant configuration issue; analytics alert not delivered; notification failure for a single tenant; low-severity monitoring anomaly",
+          "responseTimeTarget": "4 hours (within business hours)",
+          "escalation": "Slack #incidents message; assigned to on-call during next business day if not P2+",
+          "runbookLocation": "ops-service/docs/runbooks/ (ALT008 and per-tenant guides)",
+          "communicationChannel": "Slack #incidents; email digest"
+        }
+      ]
+    },
+    "maintenanceWindows": {
+      "schedule": "Sundays 02:00–04:00 UTC",
+      "duration": "2 hours maximum",
+      "affectedComponents": [
+        "PostgreSQL schema migrations (Flyway) — zero-downtime migrations preferred; table locks held for < 5 seconds",
+        "ECS service task updates (rolling deployment; zero downtime unless breaking change)",
+        "ElastiCache configuration changes (may cause brief connection reset)",
+        "Secrets rotation (automated; no downtime if rolling key pattern followed)"
+      ],
+      "communicationPlan": "Email notification to all tenant admins at least 48 hours before any maintenance window that may cause < 60 seconds of degraded availability. Status page updated 1 hour before window start. Post-maintenance status page update within 30 minutes of window close.",
+      "rollbackProcedure": "If a deployment fails health checks during the maintenance window, ECS rolling update automatically reverts to the previous task definition. Flyway migration failure triggers manual review — only forward-compatible migrations are deployed (no destructive changes without prior data migration)."
+    }
   }
 }

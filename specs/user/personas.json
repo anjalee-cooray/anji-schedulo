@@ -1,34 +1,102 @@
 {
-  "_fill": "YOU fill this. Who are the different types of users? What do they need, what frustrates them, what actions do they take?",
   "personas": [
     {
       "id": "P1",
-      "name": "Persona Name",
-      "role": "Job Title / Role",
-      "description": "A one-paragraph description of this persona — who they are and what they do on the platform.",
+      "name": "Tenant Admin",
+      "role": "Business Owner / Administrator",
+      "description": "A business owner or operations manager who onboards their organisation onto AnjiSchedulo. They configure business hours, build a service catalogue, manage their staff roster, set cancellation policies, and monitor daily performance via the tenant dashboard.",
       "goals": [
-        "What they are trying to achieve",
-        "Add more goals"
+        "Reduce no-shows through automated reminders",
+        "Eliminate double-bookings entirely",
+        "See today's schedule and revenue at a glance",
+        "Manage staff availability without back-and-forth messages",
+        "Onboard without needing technical help"
       ],
       "frustrations": [
-        "What currently frustrates them before using your product",
-        "Add more frustrations"
+        "Manual scheduling via phone or spreadsheet",
+        "No-shows with no penalty",
+        "Hard to see which services are most popular",
+        "Staff calling in sick with no easy rebooking flow"
       ],
-      "technicalLevel": "low | low-to-medium | medium | high",
+      "technicalLevel": "low-to-medium",
       "primaryActions": [
-        "Key action this persona takes in the product",
-        "Add more actions"
+        "Configure business hours and services",
+        "Add and manage staff members",
+        "View and manage the daily booking dashboard",
+        "Respond to cancellation rate alerts",
+        "Export booking history"
       ]
     },
     {
       "id": "P2",
-      "name": "Second Persona",
-      "role": "Job Title / Role",
-      "description": "Description of this persona.",
-      "goals": ["Goal 1"],
-      "frustrations": ["Frustration 1"],
+      "name": "Staff Member",
+      "role": "Service Provider",
+      "description": "An employee or contractor whose availability is managed on the platform. They receive booking confirmations, cancellation notices, and rescheduling alerts. They can block their own availability for holidays or personal time.",
+      "goals": [
+        "Know their schedule without calling the front desk",
+        "Get notified immediately when a booking is made or cancelled",
+        "Block personal time without admin involvement"
+      ],
+      "frustrations": [
+        "Finding out about bookings late",
+        "No way to block unavailability without calling admin",
+        "Schedule changes communicated via WhatsApp groups"
+      ],
       "technicalLevel": "low",
-      "primaryActions": ["Action 1"]
+      "primaryActions": [
+        "View upcoming appointments",
+        "Block availability",
+        "Receive booking and cancellation notifications"
+      ]
+    },
+    {
+      "id": "P3",
+      "name": "End Customer",
+      "role": "Appointment Booker",
+      "description": "The person booking an appointment with a tenant's business. They browse available slots, select a service and staff member, complete payment where required, and receive lifecycle communications.",
+      "goals": [
+        "Book an appointment in under 2 minutes",
+        "Receive instant confirmation",
+        "Cancel or reschedule without calling",
+        "Know exactly who they are seeing and when"
+      ],
+      "frustrations": [
+        "Calling during business hours only to find no availability",
+        "No confirmation received after booking",
+        "Hard to cancel without calling",
+        "Showing up to find the appointment was never booked"
+      ],
+      "technicalLevel": "low",
+      "primaryActions": [
+        "Browse available slots",
+        "Book appointment",
+        "Cancel or reschedule",
+        "Receive confirmations and reminders"
+      ]
+    },
+    {
+      "id": "P4",
+      "name": "Platform Operator",
+      "role": "SaaS Infrastructure Operator",
+      "description": "An internal AnjiSchedulo team member responsible for infrastructure health, incident response, and compliance operations. They monitor dead letter queues, triage unprocessable events, trigger data replays, and manage tenant lifecycle.",
+      "goals": [
+        "Know instantly when any service degrades",
+        "Resolve stuck events without redeploying",
+        "Rebuild corrupted views without data loss",
+        "Offboard tenants cleanly and compliantly"
+      ],
+      "frustrations": [
+        "Silent failures in event pipelines",
+        "No way to inspect failed events",
+        "Tenant data leaking across boundaries"
+      ],
+      "technicalLevel": "high",
+      "primaryActions": [
+        "Monitor DLQ depth and triage failed events",
+        "Trigger tenant event replay",
+        "Suspend and deprovision tenants",
+        "Respond to Grafana alerts"
+      ]
     }
   ]
 }

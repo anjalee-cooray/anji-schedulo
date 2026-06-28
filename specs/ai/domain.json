@@ -1,7 +1,412 @@
 {
   "_ai": "AI fills this. Derived from: personas.json + functional-requirements.json + glossary.json. Do not edit manually.",
   "domain": {
-    "name": "",
-    "entities": []
+    "name": "AnjiSchedulo",
+    "description": "The AnjiSchedulo domain centres on multi-tenant appointment scheduling. The core aggregate is Appointment, which owns the consistency boundary for slot reservation and its full lifecycle (requested → confirmed → rescheduled → cancelled → completed). Appointment state is never stored as a status column; it is derived by replaying the ordered AppointmentEvent stream. Tenants are isolated aggregates that own their configuration, services, and staff. The dominant consistency model is strong consistency at the slot-lock level (preventing double-bookings via a unique DB constraint) and eventual consistency for all derived views (dashboard, analytics), with a target lag under 5 seconds.",
+    "entities": [
+      {
+        "name": "Tenant",
+        "aggregateRoot": true,
+        "description": "A business registered on AnjiSchedulo. Owns all configuration, staff, and service definitions for one isolated business unit. The Tenant aggregate is the entry point for onboarding (UJ001) and offboarding (UJ007). Its provisioning is a multi-step pub/sub fan-out driven by the tenant.provisioned event.",
+        "keyAttributes": [
+          "tenant_id (UUID, PK)",
+          "name (string)",
+          "owner_email (string, PII)",
+          "plan (enum: starter | pro | enterprise)",
+          "status (enum: pending | provisioning | active | suspended | deprovisioned)",
+          "created_at",
+          "deprovisioned_at"
+        ],
+        "children": [
+          "TenantConfig",
+          "Service",
+          "StaffMember"
+        ],
+        "lifecycle": [
+          "pending",
+          "provisioning",
+          "active",
+          "suspended",
+          "deprovisioned"
+        ],
+        "patternNote": "Status machine transitions enforced in tenant-service. Suspension permits read-only access for 30 days before deprovisioning (BR011). Pool with RLS: tenant_id present on all tables; safe-by-default RLS policy returns zero rows when tenant context is missing (BR005). Immutable audit log written on every state transition (BR014)."
+      },
+      {
+        "name": "TenantConfig",
+        "aggregateRoot": false,
+        "description": "Tenant-level operational parameters that govern booking rules. Owned by Tenant. Read by Availability Service and Booking Command Service to enforce business rules.",
+        "keyAttributes": [
+          "tenant_id (FK → Tenant, part of PK)",
+          "cancellation_hours (integer — minimum hours before appointment for allowed cancellation, BR002)",
+          "booking_window_days (integer — maximum days in advance a slot can be booked, BR010)",
+          "max_advance_bookings (integer — max active bookings per customer, BR008)",
+          "timezone (string)",
+          "currency (string ISO 4217)"
+        ],
+        "children": [],
+        "lifecycle": [],
+        "patternNote": "Value object embedded in Tenant aggregate. Validated by BookingCommandService (BR002, BR008, BR010) and AvailabilityService (BR003, BR010) at request time."
+      },
+      {
+        "name": "Service",
+        "aggregateRoot": false,
+        "description": "A bookable offering defined by a tenant. Has a name, duration, and price. Customers select a Service when browsing availability (FR003). Staff members may be associated with one or more services.",
+        "keyAttributes": [
+          "service_id (UUID, PK)",
+          "tenant_id (UUID, FK → Tenant)",
+          "name (string)",
+          "duration_minutes (integer)",
+          "price_amount (decimal)",
+          "price_currency (string ISO 4217)",
+          "active (boolean)",
+          "created_at",
+          "updated_at"
+        ],
+        "children": [],
+        "lifecycle": [
+          "active",
+          "inactive"
+        ],
+        "patternNote": "Scoped to a single Tenant. Deactivation does not delete historical appointments referencing the service. Limit: 5 services for Starter tier, unlimited for Pro and Enterprise (product.json)."
+      },
+      {
+        "name": "StaffMember",
+        "aggregateRoot": false,
+        "description": "An employee or contractor whose availability is managed on the platform (P2). Owns WorkingHours and StaffBlock children. Their computed open slots form the Availability read model consumed by customers browsing slots (FR003).",
+        "keyAttributes": [
+          "staff_id (UUID, PK)",
+          "tenant_id (UUID, FK → Tenant)",
+          "name (string, PII)",
+          "email (string, PII)",
+          "active (boolean)",
+          "created_at"
+        ],
+        "children": [
+          "WorkingHours",
+          "StaffBlock"
+        ],
+        "lifecycle": [
+          "active",
+          "inactive"
+        ],
+        "patternNote": "Limit: 3 staff for Starter, 20 for Pro, unlimited for Enterprise. Deactivating a StaffMember must not cancel their existing confirmed appointments — the ops team handles that manually."
+      },
+      {
+        "name": "WorkingHours",
+        "aggregateRoot": false,
+        "description": "The recurring weekly schedule for a StaffMember. Defines the time windows within which slots are generated by the Availability Service. Enforces BR003.",
+        "keyAttributes": [
+          "working_hours_id (UUID, PK)",
+          "staff_id (UUID, FK → StaffMember)",
+          "tenant_id (UUID)",
+          "day_of_week (enum: monday … sunday)",
+          "start_time (time)",
+          "end_time (time)",
+          "effective_from (date)",
+          "effective_to (date, nullable)"
+        ],
+        "children": [],
+        "lifecycle": [],
+        "patternNote": "Availability Service joins WorkingHours with StaffBlock and existing SlotLocks to compute open slots. effective_from/to allows future schedule changes without breaking historic data."
+      },
+      {
+        "name": "StaffBlock",
+        "aggregateRoot": false,
+        "description": "A manual unavailability period set by a StaffMember or Tenant Admin. Prevents bookings during that window even if WorkingHours would otherwise allow it (FR002, P2).",
+        "keyAttributes": [
+          "block_id (UUID, PK)",
+          "staff_id (UUID, FK → StaffMember)",
+          "tenant_id (UUID)",
+          "block_start (timestamp)",
+          "block_end (timestamp)",
+          "reason (string, optional)",
+          "created_by_role (enum: staff | admin)"
+        ],
+        "children": [],
+        "lifecycle": [],
+        "patternNote": "Consumed by Availability Service. Blocks are immutable once created; to reschedule, create a new block and delete the old one."
+      },
+      {
+        "name": "Customer",
+        "aggregateRoot": false,
+        "description": "The end customer who books appointments (P3). Tenant-scoped — there is no cross-tenant customer identity in v1. A customer is identified by their email within a tenant and carries PII subject to GDPR erasure (FR013).",
+        "keyAttributes": [
+          "customer_id (UUID, PK)",
+          "tenant_id (UUID, FK → Tenant)",
+          "name (string, PII)",
+          "email (string, PII)",
+          "phone (string, PII, nullable)",
+          "active_booking_count (integer — denormalised for BR008 enforcement)",
+          "created_at",
+          "pseudonymised_at (timestamp, nullable — set on GDPR erasure)"
+        ],
+        "children": [],
+        "lifecycle": [
+          "active",
+          "pseudonymised"
+        ],
+        "patternNote": "active_booking_count is incremented/decremented atomically by BookingCommandService to enforce BR008. On GDPR erasure, name/email/phone are replaced with pseudonymous tokens; historical appointment records retain the customer_id foreign key but the PII is gone."
+      },
+      {
+        "name": "Appointment",
+        "aggregateRoot": true,
+        "description": "The core aggregate of the AnjiSchedulo domain. Represents a confirmed, scheduled reservation between a Customer and a StaffMember for a Service at a specific time. Appointment state is derived by replaying its ordered AppointmentEvent stream (Event Sourcing) — there is no mutable status column on the Appointment row itself. The Appointment aggregate owns its own consistency boundary: concurrent writes are serialised at the SlotLock level.",
+        "keyAttributes": [
+          "appointment_id (UUID, PK)",
+          "tenant_id (UUID, FK → Tenant)",
+          "customer_id (UUID, FK → Customer)",
+          "staff_id (UUID, FK → StaffMember)",
+          "service_id (UUID, FK → Service)",
+          "slot_date (date)",
+          "slot_start (time)",
+          "slot_end (time)",
+          "idempotency_key (UUID, unique — maps to BookingIdempotencyKey, BR006)",
+          "correlation_id (UUID — propagated from API Gateway, NFR014)",
+          "created_at"
+        ],
+        "children": [
+          "AppointmentEvent"
+        ],
+        "lifecycle": [
+          "requested",
+          "confirmed",
+          "rescheduled",
+          "cancelled",
+          "completed",
+          "failed"
+        ],
+        "patternNote": "Event Sourcing: current state derived by replaying AppointmentEvent[] in occurred_at order. Saga Orchestration (BR004, FR004): BookingCommandService coordinates slot reservation → payment → confirmation atomically, with full compensation on any step failure. Saga Choreography (BR009, FR005): cancellation side effects (refund, slot release, notifications) are decoupled async events."
+      },
+      {
+        "name": "AppointmentEvent",
+        "aggregateRoot": false,
+        "description": "An immutable, ordered event record in the Appointment event stream. The sequence of AppointmentEvents is the source of truth for Appointment state. Consumed by Dashboard, Analytics, and Notification services via pub/sub. Also the source for event replay (FR011).",
+        "keyAttributes": [
+          "event_id (UUID, PK)",
+          "appointment_id (UUID, FK → Appointment)",
+          "tenant_id (UUID)",
+          "event_type (enum: appointment.requested | appointment.confirmed | appointment.cancelled | appointment.rescheduled | appointment.completed | appointment.failed)",
+          "occurred_at (timestamp)",
+          "correlation_id (UUID)",
+          "causation_id (UUID, nullable — ID of the event that triggered this event)",
+          "actor_id (UUID — customer_id or staff_id or system)",
+          "actor_role (enum: customer | staff | admin | system)",
+          "payload (JSONB — full appointment snapshot at event time, for Event-Carried State Transfer)"
+        ],
+        "children": [],
+        "lifecycle": [],
+        "patternNote": "INSERT-only table (no UPDATE or DELETE). Full snapshot in payload enables Event-Carried State Transfer — downstream consumers never need to call back to the booking service to render a notification or update a view. Required by BR013 (every event must carry tenant_id, event_id, correlation_id, occurred_at)."
+      },
+      {
+        "name": "SlotLock",
+        "aggregateRoot": false,
+        "description": "A database-level exclusive reservation placed on a time slot when a booking saga begins. The unique constraint on (tenant_id, staff_id, slot_date, slot_start) WHERE released_at IS NULL is the primary enforcement mechanism for BR001. This is an infrastructure entity, not a domain concept visible to end users.",
+        "keyAttributes": [
+          "lock_id (UUID, PK)",
+          "tenant_id (UUID)",
+          "staff_id (UUID)",
+          "slot_date (date)",
+          "slot_start (time)",
+          "appointment_id (UUID, FK → Appointment)",
+          "locked_at (timestamp)",
+          "released_at (timestamp, nullable — NULL means still locked)"
+        ],
+        "children": [],
+        "lifecycle": [
+          "locked",
+          "released"
+        ],
+        "patternNote": "Unique partial index on (tenant_id, staff_id, slot_date, slot_start) WHERE released_at IS NULL enforces BR001 (no double-booking). Released atomically by the compensation path if the booking saga fails (BR004). Released by the cancellation saga when an appointment is cancelled (BR009)."
+      },
+      {
+        "name": "Payment",
+        "aggregateRoot": false,
+        "description": "A payment record associated with a confirmed appointment. Stores the Stripe PaymentIntent ID and current status. Created by payment-service when the booking saga reaches the payment step. Refunded by the cancellation saga.",
+        "keyAttributes": [
+          "payment_id (UUID, PK)",
+          "appointment_id (UUID, FK → Appointment)",
+          "tenant_id (UUID)",
+          "stripe_payment_intent_id (string)",
+          "amount (decimal)",
+          "currency (string ISO 4217)",
+          "status (enum: pending | captured | failed | refunded | refund_failed)",
+          "captured_at (timestamp, nullable)",
+          "refunded_at (timestamp, nullable)",
+          "stripe_refund_id (string, nullable)"
+        ],
+        "children": [],
+        "lifecycle": [
+          "pending",
+          "captured",
+          "failed",
+          "refunded",
+          "refund_failed"
+        ],
+        "patternNote": "Payment is optional per tenant (some tenants collect payment in person). If a refund fails, the Payment record transitions to refund_failed and the event routes to the DLQ for manual ops resolution (BR009). Payment records retained for 7 years per BR012."
+      },
+      {
+        "name": "NotificationRecord",
+        "aggregateRoot": false,
+        "description": "A record of every outbound notification attempt. Created by notification-service when processing an appointment lifecycle event. Used for delivery tracking, retry management, and DLQ escalation (FR007).",
+        "keyAttributes": [
+          "notification_id (UUID, PK)",
+          "tenant_id (UUID)",
+          "appointment_id (UUID, FK → Appointment)",
+          "recipient_type (enum: customer | staff | admin)",
+          "recipient_contact (string, PII — email or phone)",
+          "channel (enum: email | sms | whatsapp)",
+          "template_name (string)",
+          "status (enum: pending | sent | failed | dlq)",
+          "attempt_count (integer)",
+          "last_attempted_at (timestamp)",
+          "sent_at (timestamp, nullable)",
+          "failure_reason (string, nullable)",
+          "trigger_event_id (UUID — the AppointmentEvent that triggered this notification)"
+        ],
+        "children": [],
+        "lifecycle": [
+          "pending",
+          "sent",
+          "failed",
+          "dlq"
+        ],
+        "patternNote": "Retry up to 4 times with exponential backoff (FR007). After 4 failures, status transitions to dlq and an ops alert is raised. Notification failures are fully isolated from booking operations (BR007)."
+      },
+      {
+        "name": "TenantDashboardView",
+        "aggregateRoot": false,
+        "description": "A read-model (CQRS read side) providing O(1) dashboard data for a tenant admin (FR008, UJ005). Pre-aggregated per tenant per day. Updated incrementally by dashboard-service when AppointmentEvents arrive. Rebuilt from full event history by replay (FR011).",
+        "keyAttributes": [
+          "tenant_id (UUID)",
+          "view_date (date)",
+          "confirmed_count (integer)",
+          "cancelled_count (integer)",
+          "rescheduled_count (integer)",
+          "net_revenue (decimal)",
+          "cancellation_rate (decimal, 0.0–1.0)",
+          "peak_hour (integer 0–23)",
+          "last_updated_at (timestamp)",
+          "last_event_id (UUID — watermark for idempotent incremental updates)"
+        ],
+        "children": [],
+        "lifecycle": [],
+        "patternNote": "Materialised View pattern (NFR006, NFR008). last_event_id watermark enables idempotent incremental updates and safe replay. Response time < 200ms (NFR006) served directly from this view without any join. Rebuilt from AppointmentEvent replay after data corruption or bug fix (FR011)."
+      },
+      {
+        "name": "AnalyticsSummary",
+        "aggregateRoot": false,
+        "description": "A read-model maintained by analytics-service via stream processing (Kinesis). Tracks per-tenant booking velocity and cancellation rates in near-real-time to detect anomalies (FR009).",
+        "keyAttributes": [
+          "tenant_id (UUID)",
+          "window_start (timestamp)",
+          "window_end (timestamp)",
+          "booking_count (integer)",
+          "cancellation_count (integer)",
+          "velocity_ratio (decimal — current 5-min rate vs. historical average)",
+          "alert_triggered (boolean)",
+          "computed_at (timestamp)"
+        ],
+        "children": [],
+        "lifecycle": [],
+        "patternNote": "Derived from the real-time event stream. Not rebuilt by replay in v1 (analytics windows are inherently time-anchored). Anomaly alerts triggered when velocity_ratio > 3.0 or cancellation_rate > 0.30 over last 50 bookings (FR009)."
+      },
+      {
+        "name": "OutboxRecord",
+        "aggregateRoot": false,
+        "description": "Infrastructure entity. Written in the same database transaction as the domain event it carries. Polled by outbox-relay, which publishes the payload to SNS and marks the record as published. Prevents dual-write risk between the DB write and the message bus publish (NFR003).",
+        "keyAttributes": [
+          "outbox_id (UUID, PK)",
+          "tenant_id (UUID)",
+          "topic (string — SNS topic name)",
+          "event_type (string)",
+          "payload (JSONB — full event envelope)",
+          "created_at (timestamp)",
+          "published_at (timestamp, nullable — NULL means not yet published)"
+        ],
+        "children": [],
+        "lifecycle": [
+          "pending",
+          "published"
+        ],
+        "patternNote": "Transactional Outbox pattern (NFR003, BR013). outbox-relay polls for pending records, publishes to SNS, then marks published_at. At-least-once delivery guaranteed. Consumers handle duplicates via InboxRecord deduplication."
+      },
+      {
+        "name": "InboxRecord",
+        "aggregateRoot": false,
+        "description": "Infrastructure entity for consumer-side deduplication. Each consumer service (notification-service, dashboard-service, analytics-service) maintains its own inbox table. Before processing an event, the consumer inserts a row with (event_id, consumer_name). If the insert fails due to a unique constraint, the event has already been processed and is skipped.",
+        "keyAttributes": [
+          "event_id (UUID — from event envelope, PK component)",
+          "consumer_name (string — service name, PK component)",
+          "processed_at (timestamp)",
+          "result (string, nullable)"
+        ],
+        "children": [],
+        "lifecycle": [],
+        "patternNote": "Idempotent Consumer pattern (BR006, NFR009). Unique constraint on (event_id, consumer_name). Enables safe at-least-once delivery from SQS without duplicate side effects. Safe for replay (FR011)."
+      },
+      {
+        "name": "BookingIdempotencyKey",
+        "aggregateRoot": false,
+        "description": "Infrastructure entity that prevents duplicate booking operations from network retries (BR006). The client provides an idempotency_key with each booking request. If a key has been seen before, the stored result is returned without re-processing.",
+        "keyAttributes": [
+          "idempotency_key (UUID, PK — provided by client)",
+          "tenant_id (UUID)",
+          "appointment_id (UUID, nullable — set on success)",
+          "result_status (enum: confirmed | failed)",
+          "result_payload (JSONB — full response returned to client)",
+          "created_at (timestamp)",
+          "expires_at (timestamp — 24 hours after creation)"
+        ],
+        "children": [],
+        "lifecycle": [],
+        "patternNote": "Idempotent Consumer pattern at the API entry point (BR006, FR004). Unique constraint on idempotency_key. TTL-expired keys are purged by a scheduled cleanup job."
+      },
+      {
+        "name": "AuditLog",
+        "aggregateRoot": false,
+        "description": "An immutable audit record created for every write operation that modifies tenant-scoped data (BR014). Supports GDPR compliance, dispute resolution, and incident forensics (FR013). Never deleted — retained permanently per BR012.",
+        "keyAttributes": [
+          "audit_id (UUID, PK)",
+          "tenant_id (UUID)",
+          "entity_type (string — e.g. Appointment, Tenant, StaffMember)",
+          "entity_id (UUID)",
+          "operation (enum: create | update | cancel | reschedule | suspend | deprovision | export | replay)",
+          "actor_id (UUID)",
+          "actor_role (enum: customer | staff | admin | operator | system)",
+          "occurred_at (timestamp)",
+          "before_snapshot (JSONB, nullable)",
+          "after_snapshot (JSONB)"
+        ],
+        "children": [],
+        "lifecycle": [],
+        "patternNote": "INSERT-only. Database role booking_app_user has no UPDATE or DELETE privilege on audit_log (BR014). Retained permanently even after tenant deprovisioning — retained under a system-scoped partition post-deprovisioning."
+      },
+      {
+        "name": "ReplayJob",
+        "aggregateRoot": false,
+        "description": "Tracks the lifecycle of a tenant event replay operation triggered by a Platform Operator (FR011, UJ006). Ensures operators have visibility into replay progress and can diagnose failures.",
+        "keyAttributes": [
+          "job_id (UUID, PK)",
+          "tenant_id (UUID)",
+          "initiated_by (UUID — operator user_id)",
+          "scope_type (enum: full_tenant | date_range | event_type | specific_ids)",
+          "scope_params (JSONB — e.g. {\"from\": \"2026-01-01\", \"to\": \"2026-06-01\"})",
+          "status (enum: queued | running | completed | failed | cancelled)",
+          "events_published (integer)",
+          "started_at (timestamp, nullable)",
+          "completed_at (timestamp, nullable)",
+          "error_message (string, nullable)"
+        ],
+        "children": [],
+        "lifecycle": [
+          "queued",
+          "running",
+          "completed",
+          "failed",
+          "cancelled"
+        ],
+        "patternNote": "ops-service creates and updates ReplayJob records. replay events are tagged with replay_job_id in their envelope so consumers can differentiate live vs replay traffic and log accordingly. Live booking operations are not affected by replay (FR011)."
+      }
+    ]
   }
 }

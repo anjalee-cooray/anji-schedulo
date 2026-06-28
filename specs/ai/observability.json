@@ -1,10 +1,330 @@
 {
   "_ai": "AI fills this. Derived from: non-functional-requirements.json + architecture.json + infrastructure.json. Do not edit manually.",
   "observability": {
-    "stack": "",
-    "components": {},
-    "slis": [],
-    "slos": [],
-    "alerts": []
+    "stack": "Grafana LGTM (Loki for logs, Grafana for dashboards and alerting, Tempo for traces, Mimir for metrics). Deployed on AWS ECS Fargate in the same VPC as the application services. Grafana Cloud is the fallback if self-hosted LGTM is unavailable during an incident.",
+    "components": {
+      "metrics": {
+        "collectionMechanism": "Prometheus scrape. Each NestJS service exposes /metrics endpoint via prom-client. Mimir scrapes via Prometheus remote_write protocol every 15 seconds.",
+        "storageBackend": "Grafana Mimir (horizontally scalable Prometheus-compatible storage on S3)",
+        "retention": "90 days",
+        "keyMetrics": [
+          {
+            "name": "bookings_saga_duration_seconds",
+            "description": "End-to-end booking saga latency from request receipt to appointment.confirmed published",
+            "query": "histogram_quantile(0.95, sum(rate(bookings_saga_duration_seconds_bucket[5m])) by (le, tenant_id))",
+            "unit": "seconds",
+            "satisfies": "NFR004, SLI001"
+          },
+          {
+            "name": "http_server_requests_seconds",
+            "description": "HTTP request latency by route and status code for all services",
+            "query": "histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{route='/availability'}[5m])) by (le))",
+            "unit": "seconds",
+            "satisfies": "NFR005, SLI003"
+          },
+          {
+            "name": "dashboard_view_response_seconds",
+            "description": "dashboard-service response latency for GET /dashboard endpoint",
+            "query": "histogram_quantile(0.95, sum(rate(dashboard_view_response_seconds_bucket[5m])) by (le))",
+            "unit": "seconds",
+            "satisfies": "NFR006, SLI004"
+          },
+          {
+            "name": "dlq_depth_total",
+            "description": "Number of messages currently in each dead letter queue",
+            "query": "sum(dlq_depth_total) by (queue_name)",
+            "unit": "messages",
+            "satisfies": "NFR016, SLI005"
+          },
+          {
+            "name": "booking_saga_errors_total",
+            "description": "Count of booking saga failures by failure_reason (slot_unavailable, payment_failed, payment_service_unavailable)",
+            "query": "sum(rate(booking_saga_errors_total[5m])) by (failure_reason)",
+            "unit": "errors/second",
+            "satisfies": "NFR001, SLI002"
+          },
+          {
+            "name": "booking_success_rate",
+            "description": "Ratio of successful booking sagas to total booking attempts",
+            "query": "sum(rate(bookings_saga_duration_seconds_count{status='confirmed'}[5m])) / sum(rate(bookings_saga_duration_seconds_count[5m]))",
+            "unit": "ratio (0.0–1.0)",
+            "satisfies": "NFR001, SLI002"
+          },
+          {
+            "name": "notification_delivery_failures_total",
+            "description": "Count of notification delivery failures by channel and failure_reason",
+            "query": "sum(rate(notification_delivery_failures_total[5m])) by (channel, failure_reason)",
+            "unit": "failures/second",
+            "satisfies": "NFR002"
+          },
+          {
+            "name": "dashboard_view_lag_seconds",
+            "description": "Lag between the latest AppointmentEvent occurred_at and the TenantDashboardView last_updated_at",
+            "query": "max(dashboard_view_lag_seconds) by (tenant_id)",
+            "unit": "seconds",
+            "satisfies": "NFR008, SLI004"
+          },
+          {
+            "name": "outbox_backlog_total",
+            "description": "Number of outbox_records with published_at IS NULL — indicates relay lag",
+            "query": "sum(outbox_backlog_total) by (service)",
+            "unit": "records",
+            "satisfies": "NFR003"
+          },
+          {
+            "name": "tenant_active_bookings_total",
+            "description": "Count of currently confirmed (active) appointments per tenant",
+            "query": "sum(tenant_active_bookings_total) by (tenant_id)",
+            "unit": "appointments",
+            "satisfies": "FR008 — operational visibility"
+          },
+          {
+            "name": "isolation_monitor_violations_total",
+            "description": "Count of cross-tenant isolation violations detected by the isolation monitor. Must always be zero.",
+            "query": "sum(isolation_monitor_violations_total)",
+            "unit": "violations",
+            "satisfies": "NFR012, BR005"
+          }
+        ]
+      },
+      "logs": {
+        "collectionPipeline": "Fluent Bit (deployed as ECS sidecar on every task). Collects stdout/stderr from application containers, applies PII redaction filter rules, enriches with ECS task metadata (service_name, task_id, environment), and forwards to Grafana Loki via HTTP.",
+        "storage": "Grafana Loki (S3 backend in eu-west-1)",
+        "retention": "30 days",
+        "mandatoryFields": [
+          "timestamp (ISO 8601 — log line timestamp)",
+          "level (enum: debug | info | warn | error)",
+          "service (string — NestJS app name, e.g. booking-command-service)",
+          "tenant_id (string UUID — from request TenantContext; 'system' for non-tenant-scoped operations)",
+          "correlation_id (string UUID — propagated from API Gateway X-Correlation-Id header, NFR014)",
+          "user_id (string UUID — from JWT sub claim; 'anonymous' for unauthenticated requests)",
+          "trace_id (string — OpenTelemetry trace ID for Loki → Tempo correlation)",
+          "span_id (string — OpenTelemetry span ID)",
+          "message (string — human-readable log message)"
+        ],
+        "sensitiveFieldsRedacted": [
+          "email (customer and staff email addresses)",
+          "phone (customer phone numbers)",
+          "name (when it appears as a standalone field — not in service/staff names)",
+          "recipient_contact (NotificationRecord field)",
+          "stripe_secret_key (never logged; Fluent Bit strips any field matching *secret*key*)",
+          "password",
+          "authorization_header_value"
+        ]
+      },
+      "traces": {
+        "instrumentationLibrary": "OpenTelemetry SDK for Node.js (auto-instrumentation for NestJS HTTP, PostgreSQL via pg driver, Redis, and AWS SDK calls)",
+        "exporter": "OTLP (gRPC) to Grafana Tempo",
+        "retention": "7 days",
+        "samplingStrategy": {
+          "bookingSaga": "100% — every booking request traced end-to-end across booking-command-service, availability-service, and payment-service (NFR004 critical path)",
+          "cancellationSaga": "100% — every cancellation traced across all choreography participants",
+          "dlqEvents": "100% — every DLQ triage operation traced",
+          "availabilityQuery": "10% — high-volume read endpoint; sampled to control storage",
+          "dashboardRead": "5% — very high volume, O(1) response; minimal tracing needed",
+          "replayOperations": "100% — operator actions always fully traced"
+        },
+        "spanAttributes": [
+          "tenant_id",
+          "correlation_id",
+          "user_id",
+          "appointment_id (when applicable)",
+          "payment_id (when applicable)",
+          "saga_step (enum: slot_check | payment_capture | confirmation | slot_release | refund — for saga spans)",
+          "db.statement (sanitised — no PII in SQL parameters)",
+          "messaging.destination (SNS topic or SQS queue name)",
+          "http.route",
+          "http.status_code"
+        ]
+      },
+      "dashboards": [
+        {
+          "name": "Platform Overview",
+          "contents": "Service health (up/down per service), request rate per service, error rate per service, p95 latency per service, ECS task counts, active alerts"
+        },
+        {
+          "name": "Booking Operations",
+          "contents": "Booking saga success rate, saga p95 duration (vs. 3s SLO), booking errors by failure_reason, active slot locks, idempotency key hit rate, outbox backlog"
+        },
+        {
+          "name": "Tenant Operations",
+          "contents": "Bookings per tenant per day (heatmap), cancellation rate per tenant, net revenue per tenant (from dashboard-service), active tenants by plan tier, new tenant registrations"
+        },
+        {
+          "name": "DLQ Triage",
+          "contents": "DLQ depth per consumer queue, oldest unresolved DLQ message age, DLQ resolution rate, failed event breakdown by consumer and failure_reason, notification failure rate by channel"
+        },
+        {
+          "name": "Infrastructure Health",
+          "contents": "RDS CPU utilisation and connections, ElastiCache hit rate and memory, SQS queue depth per queue, ECS CPU and memory per service, outbox relay lag"
+        },
+        {
+          "name": "SLO Burn Rate",
+          "contents": "Error budget remaining per SLO (SLO001–SLO004), burn rate over 1h/6h/24h windows, alert state per SLO, projected exhaustion date"
+        },
+        {
+          "name": "Security and Isolation",
+          "contents": "Isolation monitor violation count (must be zero), failed auth attempts per minute, JWT validation errors by service, Secrets Manager access anomalies"
+        }
+      ],
+      "alerting": {
+        "tool": "Grafana Alerting (built-in Grafana 10+)",
+        "queryLanguage": "PromQL (metrics alerts) and LogQL (log-based alerts)",
+        "notificationChannels": [
+          "PagerDuty (P1 and P2 alerts — on-call engineer paged immediately)",
+          "Slack #incidents channel (all severities)",
+          "Email (P3 alerts — ops team daily digest)"
+        ]
+      }
+    },
+    "slis": [
+      {
+        "id": "SLI001",
+        "name": "Booking Saga p95 Latency",
+        "description": "The 95th percentile end-to-end duration of the booking saga from request receipt to appointment.confirmed published",
+        "metricQuery": "histogram_quantile(0.95, sum(rate(bookings_saga_duration_seconds_bucket[5m])) by (le))",
+        "relatedNFR": "NFR004"
+      },
+      {
+        "id": "SLI002",
+        "name": "Booking Success Rate",
+        "description": "Proportion of booking saga attempts that result in appointment.confirmed (excludes expected 409/402 failures caused by unavailable slots or declined payments)",
+        "metricQuery": "sum(rate(bookings_saga_duration_seconds_count{status='confirmed'}[5m])) / sum(rate(bookings_saga_duration_seconds_count[5m]))",
+        "relatedNFR": "NFR001"
+      },
+      {
+        "id": "SLI003",
+        "name": "Availability Query p95 Latency",
+        "description": "The 95th percentile response time for slot availability queries (GET /availability endpoints)",
+        "metricQuery": "histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{route=~'.*/availability.*', status!~'5..'}[5m])) by (le))",
+        "relatedNFR": "NFR005"
+      },
+      {
+        "id": "SLI004",
+        "name": "Dashboard Response p95 Latency",
+        "description": "The 95th percentile response time for dashboard view reads (GET /dashboard endpoint served from materialised view)",
+        "metricQuery": "histogram_quantile(0.95, sum(rate(dashboard_view_response_seconds_bucket[5m])) by (le))",
+        "relatedNFR": "NFR006"
+      },
+      {
+        "id": "SLI005",
+        "name": "DLQ Depth",
+        "description": "Number of messages in all dead letter queues combined. Non-zero value indicates unprocessed failures requiring operator attention.",
+        "metricQuery": "sum(dlq_depth_total)",
+        "relatedNFR": "NFR016"
+      }
+    ],
+    "slos": [
+      {
+        "id": "SLO001",
+        "name": "Booking Saga Latency SLO",
+        "target": "99.5%",
+        "window": "30 days",
+        "description": "99.5% of booking saga attempts complete with p95 latency below 3 seconds over a 30-day rolling window",
+        "relatedSLI": "SLI001",
+        "errorBudget": "0.5% of booking requests may exceed 3s p95 — approximately 7.2 hours of non-compliance per 30-day window"
+      },
+      {
+        "id": "SLO002",
+        "name": "Platform Availability SLO",
+        "target": "99.9%",
+        "window": "30 days",
+        "description": "Core booking operations (create, confirm, cancel) are available 99.9% of the time over a rolling 30-day window",
+        "relatedSLI": "SLI002",
+        "errorBudget": "0.1% downtime — approximately 43.2 minutes per 30-day window"
+      },
+      {
+        "id": "SLO003",
+        "name": "Availability Query Latency SLO",
+        "target": "99.5%",
+        "window": "30 days",
+        "description": "99.5% of slot availability queries return within 500ms p95",
+        "relatedSLI": "SLI003",
+        "errorBudget": "0.5% of queries may exceed 500ms p95"
+      },
+      {
+        "id": "SLO004",
+        "name": "Dashboard Response Latency SLO",
+        "target": "99.5%",
+        "window": "30 days",
+        "description": "99.5% of dashboard view responses return within 200ms p95",
+        "relatedSLI": "SLI004",
+        "errorBudget": "0.5% of dashboard requests may exceed 200ms p95"
+      }
+    ],
+    "alerts": [
+      {
+        "id": "ALT001",
+        "name": "Booking Saga Error Rate Critical",
+        "condition": "sum(rate(booking_saga_errors_total{failure_reason!~'slot_unavailable|booking_limit_exceeded'}[5m])) > 0.05",
+        "severity": "P1",
+        "description": "More than 5% of booking saga attempts failing with infrastructure errors (excludes expected business errors like slot_unavailable). Triggers immediate on-call page.",
+        "notificationChannels": ["PagerDuty", "Slack #incidents"],
+        "runbookLink": "ops-service/docs/runbooks/ALT001-booking-error-rate.md"
+      },
+      {
+        "id": "ALT002",
+        "name": "Platform Availability Below SLO",
+        "condition": "sum(rate(bookings_saga_duration_seconds_count{status='confirmed'}[15m])) / sum(rate(bookings_saga_duration_seconds_count[15m])) < 0.999",
+        "severity": "P1",
+        "description": "Booking success rate has dropped below 99.9% over the last 15 minutes. Indicates a widespread service degradation.",
+        "notificationChannels": ["PagerDuty", "Slack #incidents"],
+        "runbookLink": "ops-service/docs/runbooks/ALT002-availability-slo.md"
+      },
+      {
+        "id": "ALT003",
+        "name": "DLQ Depth Non-Zero",
+        "condition": "sum(dlq_depth_total) > 0",
+        "severity": "P2",
+        "description": "One or more messages have been routed to a dead letter queue after retry exhaustion. Requires operator triage within 4 hours (NFR016).",
+        "notificationChannels": ["PagerDuty", "Slack #incidents"],
+        "runbookLink": "ops-service/docs/runbooks/ALT003-dlq-triage.md"
+      },
+      {
+        "id": "ALT004",
+        "name": "Booking Saga p95 Latency Exceeds SLO",
+        "condition": "histogram_quantile(0.95, sum(rate(bookings_saga_duration_seconds_bucket[10m])) by (le)) > 3",
+        "severity": "P2",
+        "description": "Booking saga p95 latency has exceeded 3 seconds for 10 consecutive minutes. Indicates upstream degradation in availability-service or payment-service.",
+        "notificationChannels": ["PagerDuty", "Slack #incidents"],
+        "runbookLink": "ops-service/docs/runbooks/ALT004-saga-latency.md"
+      },
+      {
+        "id": "ALT005",
+        "name": "Cross-Tenant Isolation Violation",
+        "condition": "sum(isolation_monitor_violations_total) > 0",
+        "severity": "P1",
+        "description": "The isolation monitor has detected at least one cross-tenant data access violation. Immediate incident response required. All-hands.",
+        "notificationChannels": ["PagerDuty", "Slack #incidents"],
+        "runbookLink": "ops-service/docs/runbooks/ALT005-isolation-breach.md"
+      },
+      {
+        "id": "ALT006",
+        "name": "Outbox Relay Lag",
+        "condition": "sum(outbox_backlog_total) > 100",
+        "severity": "P2",
+        "description": "outbox-relay has more than 100 unpublished events. Indicates relay failure or SNS throttling. Events are durable in PostgreSQL but downstream consumers are falling behind.",
+        "notificationChannels": ["PagerDuty", "Slack #incidents"],
+        "runbookLink": "ops-service/docs/runbooks/ALT006-outbox-lag.md"
+      },
+      {
+        "id": "ALT007",
+        "name": "RDS CPU High",
+        "condition": "avg(aws_rds_cpu_utilization_average) > 80",
+        "severity": "P2",
+        "description": "RDS PostgreSQL CPU utilisation has exceeded 80% for 5 consecutive minutes. May indicate slow query, missing index, or tenant noisy-neighbour issue.",
+        "notificationChannels": ["Slack #incidents"],
+        "runbookLink": "ops-service/docs/runbooks/ALT007-rds-cpu.md"
+      },
+      {
+        "id": "ALT008",
+        "name": "Notification Failure Rate High",
+        "condition": "sum(rate(notification_delivery_failures_total[5m])) / sum(rate(notification_attempts_total[5m])) > 0.10",
+        "severity": "P3",
+        "description": "More than 10% of notification delivery attempts are failing. May indicate SendGrid or Twilio outage. Notifications are decoupled from bookings (BR007) — bookings continue normally.",
+        "notificationChannels": ["Slack #incidents"],
+        "runbookLink": "ops-service/docs/runbooks/ALT008-notification-failures.md"
+      }
+    ]
   }
 }

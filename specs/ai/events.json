@@ -1,4 +1,512 @@
 {
   "_ai": "AI fills this. Derived from: bounded-contexts.json + user-journeys.json + architecture.json. Do not edit manually.",
-  "events": []
+  "events": [
+    {
+      "name": "tenant.provisioned",
+      "producer": "tenant-service",
+      "consumers": [
+        { "service": "notification-service", "reason": "send welcome email to tenant admin (UJ001 step 3)" },
+        { "service": "billing-service", "reason": "activate Stripe subscription for the chosen plan (FR001)" }
+      ],
+      "trigger": "Tenant admin submits registration form (UJ001 step 1). tenant-service writes Tenant row and OutboxRecord in the same transaction (ADR005, NFR003). Related: FR001, BR005.",
+      "delivery": "atLeastOnce",
+      "idempotent": true,
+      "idempotencyMechanism": "notification-service and billing-service deduplicate via InboxRecord on event_id (NFR009).",
+      "channel": "SNS topic: tenant-provisioned-topic → SQS FIFO queues: notification-service-tenant-provisioned-queue, billing-service-tenant-provisioned-queue. MessageGroupId = tenant_id.",
+      "keyPayloadFields": [
+        "event_id (UUID)",
+        "tenant_id (UUID)",
+        "correlation_id (UUID — propagated from API Gateway, NFR014)",
+        "occurred_at (ISO 8601 timestamp)",
+        "name (string — business name)",
+        "owner_email (string — destination for welcome email)",
+        "owner_name (string)",
+        "plan (enum: starter | pro | enterprise)",
+        "stripe_customer_id (string — created by tenant-service before publishing)"
+      ]
+    },
+    {
+      "name": "tenant.configured",
+      "producer": "tenant-service",
+      "consumers": [
+        { "service": "booking-command-service", "reason": "refresh local TenantConfig cache to enforce updated booking rules (BR002, BR008, BR010)" },
+        { "service": "availability-service", "reason": "invalidate slot availability cache for the tenant (NFR005)" }
+      ],
+      "trigger": "Tenant admin updates business hours, cancellation policy, booking window, or max_advance_bookings (FR002, UJ001 steps 4–6). Related: BR002, BR003, BR008, BR010.",
+      "delivery": "atLeastOnce",
+      "idempotent": true,
+      "idempotencyMechanism": "Consumers deduplicate via InboxRecord on event_id. Config snapshot in payload means out-of-order delivery is safe — consumers apply the latest snapshot by comparing occurred_at.",
+      "channel": "SNS topic: tenant-configured-topic → SQS FIFO queues: booking-command-service-tenant-configured-queue, availability-service-tenant-configured-queue. MessageGroupId = tenant_id.",
+      "keyPayloadFields": [
+        "event_id (UUID)",
+        "tenant_id (UUID)",
+        "correlation_id (UUID)",
+        "occurred_at (ISO 8601 timestamp)",
+        "config_snapshot (object: cancellation_hours, booking_window_days, max_advance_bookings, timezone, currency)",
+        "changed_by (UUID — staff_id of the admin)"
+      ]
+    },
+    {
+      "name": "tenant.suspended",
+      "producer": "tenant-service",
+      "consumers": [
+        { "service": "booking-command-service", "reason": "halt acceptance of new booking requests for the tenant" },
+        { "service": "notification-service", "reason": "notify tenant admin of suspension (optional in v1)" }
+      ],
+      "trigger": "Platform Operator initiates suspension via ops-service (FR013, UJ007 step 5). Related: BR011.",
+      "delivery": "atLeastOnce",
+      "idempotent": true,
+      "idempotencyMechanism": "InboxRecord deduplication on event_id.",
+      "channel": "SNS topic: tenant-suspended-topic → SQS FIFO queues per consumer. MessageGroupId = tenant_id.",
+      "keyPayloadFields": [
+        "event_id (UUID)",
+        "tenant_id (UUID)",
+        "correlation_id (UUID)",
+        "occurred_at (ISO 8601 timestamp)",
+        "suspended_by (UUID — operator user_id)",
+        "reason (string)",
+        "data_export_deadline (ISO 8601 date — 30 days from occurred_at, BR011)"
+      ]
+    },
+    {
+      "name": "tenant.deprovisioned",
+      "producer": "tenant-service",
+      "consumers": [
+        { "service": "ops-service", "reason": "initiate 90-day data retention countdown and schedule hard deletion (BR012, FR013)" }
+      ],
+      "trigger": "Platform Operator confirms deprovisioning after the 30-day suspension window (FR013, UJ007 step 5). Related: BR011, BR012.",
+      "delivery": "atLeastOnce",
+      "idempotent": true,
+      "idempotencyMechanism": "InboxRecord deduplication on event_id.",
+      "channel": "SNS topic: tenant-deprovisioned-topic → SQS FIFO queue: ops-service-tenant-deprovisioned-queue. MessageGroupId = tenant_id.",
+      "keyPayloadFields": [
+        "event_id (UUID)",
+        "tenant_id (UUID)",
+        "correlation_id (UUID)",
+        "occurred_at (ISO 8601 timestamp)",
+        "deprovisioned_by (UUID — operator user_id)",
+        "hard_deletion_at (ISO 8601 date — 90 days from occurred_at, BR012)"
+      ]
+    },
+    {
+      "name": "tenant.data_exported",
+      "producer": "ops-service",
+      "consumers": [
+        { "service": "notification-service", "reason": "send download link email to verified tenant owner (FR012)" }
+      ],
+      "trigger": "Tenant admin requests data export (FR012, UJ007 step 1–3). Related: BR014.",
+      "delivery": "atLeastOnce",
+      "idempotent": true,
+      "idempotencyMechanism": "InboxRecord deduplication on event_id.",
+      "channel": "SNS topic: tenant-data-exported-topic → SQS FIFO queue: notification-service-tenant-data-exported-queue. MessageGroupId = tenant_id.",
+      "keyPayloadFields": [
+        "event_id (UUID)",
+        "tenant_id (UUID)",
+        "correlation_id (UUID)",
+        "occurred_at (ISO 8601 timestamp)",
+        "owner_email (string — delivery address for download link)",
+        "signed_url (string — S3 pre-signed URL, expires in 24 hours, FR012)",
+        "export_includes (array of strings — data categories included in archive)"
+      ]
+    },
+    {
+      "name": "appointment.requested",
+      "producer": "booking-command-service",
+      "consumers": [
+        { "service": "notification-service", "reason": "send optional booking-in-progress acknowledgement to customer (FR007)" }
+      ],
+      "trigger": "Customer submits booking request (UJ002 step 4–5). booking-command-service writes AppointmentEvent (type=requested) and OutboxRecord in the same transaction after passing idempotency and business-rule checks. Related: FR004, BR006, BR008.",
+      "delivery": "atLeastOnce",
+      "idempotent": true,
+      "idempotencyMechanism": "InboxRecord deduplication on event_id. Booking-level idempotency enforced upstream via BookingIdempotencyKey (BR006) before this event is ever published.",
+      "channel": "SNS topic: appointment-requested-topic → SQS FIFO queue: notification-service-appointment-requested-queue. MessageGroupId = tenant_id.",
+      "keyPayloadFields": [
+        "event_id (UUID)",
+        "appointment_id (UUID)",
+        "tenant_id (UUID)",
+        "correlation_id (UUID)",
+        "occurred_at (ISO 8601 timestamp)",
+        "idempotency_key (UUID — client-provided, BR006)",
+        "customer_id (UUID)",
+        "customer_name (string)",
+        "customer_email (string)",
+        "staff_id (UUID)",
+        "staff_name (string)",
+        "service_id (UUID)",
+        "service_name (string)",
+        "slot_date (date)",
+        "slot_start (time)",
+        "slot_end (time)"
+      ]
+    },
+    {
+      "name": "appointment.confirmed",
+      "producer": "booking-command-service",
+      "consumers": [
+        { "service": "notification-service", "reason": "send booking confirmation to customer and staff (FR007, BR007)" },
+        { "service": "dashboard-service", "reason": "increment confirmed_count and net_revenue on TenantDashboardView (FR008, NFR008)" },
+        { "service": "analytics-service", "reason": "update per-tenant booking velocity window (FR009)" },
+        { "service": "availability-service", "reason": "invalidate Redis slot cache for the confirmed slot (NFR005)" }
+      ],
+      "trigger": "Booking saga completes all steps successfully: slot reserved + payment captured + AppointmentEvent(confirmed) written (UJ002 step 7, FR004). This is the critical-path event — confirmation must be published within 30 seconds of booking (FR004 acceptance criterion). Related: FR004, BR001, BR004, BR006.",
+      "delivery": "atLeastOnce",
+      "idempotent": true,
+      "idempotencyMechanism": "InboxRecord deduplication on event_id in all consumers. dashboard-service uses last_event_id watermark on TenantDashboardView for safe incremental updates (NFR009).",
+      "channel": "SNS topic: appointment-confirmed-topic → SQS FIFO queues: notification-service-appointment-confirmed-queue, dashboard-service-appointment-confirmed-queue, analytics-service-appointment-confirmed-queue, availability-service-appointment-confirmed-queue. MessageGroupId = tenant_id.",
+      "keyPayloadFields": [
+        "event_id (UUID)",
+        "appointment_id (UUID)",
+        "tenant_id (UUID)",
+        "correlation_id (UUID — for distributed trace linkage across the saga, NFR014)",
+        "causation_id (UUID — appointment.requested event_id)",
+        "occurred_at (ISO 8601 timestamp)",
+        "customer_snapshot (object: customer_id, name, email, phone)",
+        "staff_snapshot (object: staff_id, name, email)",
+        "service_snapshot (object: service_id, name, duration_minutes, price_amount, currency)",
+        "slot_date (date)",
+        "slot_start (time)",
+        "slot_end (time)",
+        "payment_id (UUID, nullable — null if no payment required)",
+        "amount_charged (decimal, nullable)",
+        "currency (string ISO 4217, nullable)"
+      ]
+    },
+    {
+      "name": "appointment.cancelled",
+      "producer": "booking-command-service",
+      "consumers": [
+        { "service": "payment-service", "reason": "initiate refund if a payment was captured (FR005, BR009)" },
+        { "service": "notification-service", "reason": "send cancellation notice to customer and staff (FR007, BR007)" },
+        { "service": "dashboard-service", "reason": "increment cancelled_count and recalculate cancellation_rate (FR008)" },
+        { "service": "availability-service", "reason": "invalidate slot cache to re-surface freed slot for new bookings (FR005)" },
+        { "service": "analytics-service", "reason": "update per-tenant cancellation rate window (FR009)" }
+      ],
+      "trigger": "Customer or staff requests cancellation within the policy window (UJ003 step 1–3). booking-command-service validates BR002 (policy window), writes AppointmentEvent(cancelled), releases SlotLock, and publishes via Outbox in one transaction. Related: FR005, BR002, BR009, BR013.",
+      "delivery": "atLeastOnce",
+      "idempotent": true,
+      "idempotencyMechanism": "InboxRecord deduplication in all consumers. payment-service checks Payment.status before attempting refund to avoid duplicate refunds.",
+      "channel": "SNS topic: appointment-cancelled-topic → SQS FIFO queues: payment-service-appointment-cancelled-queue, notification-service-appointment-cancelled-queue, dashboard-service-appointment-cancelled-queue, availability-service-appointment-cancelled-queue, analytics-service-appointment-cancelled-queue. MessageGroupId = tenant_id.",
+      "keyPayloadFields": [
+        "event_id (UUID)",
+        "appointment_id (UUID)",
+        "tenant_id (UUID)",
+        "correlation_id (UUID)",
+        "causation_id (UUID — cancellation request event_id)",
+        "occurred_at (ISO 8601 timestamp)",
+        "cancelled_by_role (enum: customer | staff | admin | system)",
+        "cancelled_by_id (UUID)",
+        "customer_snapshot (object: customer_id, name, email, phone)",
+        "staff_snapshot (object: staff_id, name, email)",
+        "service_snapshot (object: service_id, name)",
+        "slot_date (date)",
+        "slot_start (time)",
+        "payment_id (UUID, nullable)",
+        "amount_eligible_for_refund (decimal, nullable — null if no payment or refund not applicable)"
+      ]
+    },
+    {
+      "name": "appointment.rescheduled",
+      "producer": "booking-command-service",
+      "consumers": [
+        { "service": "notification-service", "reason": "send rescheduling confirmation to customer (FR007, FR006)" },
+        { "service": "dashboard-service", "reason": "increment rescheduled_count on TenantDashboardView (FR008)" },
+        { "service": "availability-service", "reason": "invalidate cache for old slot (now freed) and new slot (now locked)" }
+      ],
+      "trigger": "Customer selects a new slot for an existing confirmed appointment (UJ004, FR006). booking-command-service first confirms the new slot via saga, then releases the old SlotLock and writes AppointmentEvent(rescheduled) atomically. Related: FR006, BR001, BR004.",
+      "delivery": "atLeastOnce",
+      "idempotent": true,
+      "idempotencyMechanism": "InboxRecord deduplication on event_id in all consumers.",
+      "channel": "SNS topic: appointment-rescheduled-topic → SQS FIFO queues: notification-service-appointment-rescheduled-queue, dashboard-service-appointment-rescheduled-queue, availability-service-appointment-rescheduled-queue. MessageGroupId = tenant_id.",
+      "keyPayloadFields": [
+        "event_id (UUID)",
+        "appointment_id (UUID)",
+        "tenant_id (UUID)",
+        "correlation_id (UUID)",
+        "causation_id (UUID — reschedule request event_id)",
+        "occurred_at (ISO 8601 timestamp)",
+        "customer_snapshot (object: customer_id, name, email, phone)",
+        "staff_snapshot (object: staff_id, name, email)",
+        "service_snapshot (object: service_id, name, duration_minutes)",
+        "old_slot_date (date)",
+        "old_slot_start (time)",
+        "new_slot_date (date)",
+        "new_slot_start (time)",
+        "new_slot_end (time)"
+      ]
+    },
+    {
+      "name": "appointment.completed",
+      "producer": "booking-command-service",
+      "consumers": [
+        { "service": "dashboard-service", "reason": "update peak_hour computation on TenantDashboardView (FR008)" }
+      ],
+      "trigger": "Appointment slot time has passed and the appointment was not cancelled. In v1, a scheduled job in booking-command-service transitions confirmed appointments to completed after slot_end + 15 minutes. Related: FR008.",
+      "delivery": "atLeastOnce",
+      "idempotent": true,
+      "idempotencyMechanism": "InboxRecord deduplication on event_id.",
+      "channel": "SNS topic: appointment-completed-topic → SQS FIFO queue: dashboard-service-appointment-completed-queue. MessageGroupId = tenant_id.",
+      "keyPayloadFields": [
+        "event_id (UUID)",
+        "appointment_id (UUID)",
+        "tenant_id (UUID)",
+        "correlation_id (UUID)",
+        "occurred_at (ISO 8601 timestamp)",
+        "slot_date (date)",
+        "slot_start (time)",
+        "staff_id (UUID)"
+      ]
+    },
+    {
+      "name": "appointment.failed",
+      "producer": "booking-command-service",
+      "consumers": [
+        { "service": "notification-service", "reason": "send failure acknowledgement to customer (optional — not in MVP)" }
+      ],
+      "trigger": "Booking saga fails: either the slot is unavailable (409) or payment capture fails (402) (FR004, BR001, BR004). booking-command-service writes compensation events and publishes appointment.failed via Outbox.",
+      "delivery": "atLeastOnce",
+      "idempotent": true,
+      "idempotencyMechanism": "InboxRecord deduplication on event_id.",
+      "channel": "SNS topic: appointment-failed-topic → SQS FIFO queue: notification-service-appointment-failed-queue. MessageGroupId = tenant_id.",
+      "keyPayloadFields": [
+        "event_id (UUID)",
+        "appointment_id (UUID, nullable — may not exist if saga failed before Appointment row was created)",
+        "tenant_id (UUID)",
+        "correlation_id (UUID)",
+        "occurred_at (ISO 8601 timestamp)",
+        "idempotency_key (UUID — for client-side deduplication)",
+        "failure_reason (enum: slot_unavailable | payment_failed | payment_service_unavailable | booking_limit_exceeded)",
+        "http_status_code (integer — 409 or 402)"
+      ]
+    },
+    {
+      "name": "payment.captured",
+      "producer": "payment-service",
+      "consumers": [
+        { "service": "booking-command-service", "reason": "advance booking saga to appointment.confirmed step after payment confirmation (FR004, BR004)" }
+      ],
+      "trigger": "Stripe PaymentIntent charge confirmed during booking saga step 2 (UJ002 step 6, FR004). payment-service writes Payment record and publishes via Outbox. Related: BR004.",
+      "delivery": "atLeastOnce",
+      "idempotent": true,
+      "idempotencyMechanism": "booking-command-service checks BookingIdempotencyKey before re-advancing the saga (BR006). InboxRecord deduplication on event_id.",
+      "channel": "SNS topic: payment-captured-topic → SQS FIFO queue: booking-command-service-payment-captured-queue. MessageGroupId = tenant_id.",
+      "keyPayloadFields": [
+        "event_id (UUID)",
+        "payment_id (UUID)",
+        "appointment_id (UUID)",
+        "tenant_id (UUID)",
+        "correlation_id (UUID)",
+        "causation_id (UUID — appointment.requested event_id)",
+        "occurred_at (ISO 8601 timestamp)",
+        "amount (decimal)",
+        "currency (string ISO 4217)",
+        "stripe_payment_intent_id (string)"
+      ]
+    },
+    {
+      "name": "payment.failed",
+      "producer": "payment-service",
+      "consumers": [
+        { "service": "booking-command-service", "reason": "trigger slot release compensation and publish appointment.failed (FR004, BR004)" }
+      ],
+      "trigger": "Stripe PaymentIntent charge declines or times out during booking saga step 2 (UJ002, FR004). Related: BR004.",
+      "delivery": "atLeastOnce",
+      "idempotent": true,
+      "idempotencyMechanism": "InboxRecord deduplication on event_id. booking-command-service checks SlotLock.released_at before attempting compensation.",
+      "channel": "SNS topic: payment-failed-topic → SQS FIFO queue: booking-command-service-payment-failed-queue. MessageGroupId = tenant_id.",
+      "keyPayloadFields": [
+        "event_id (UUID)",
+        "payment_id (UUID)",
+        "appointment_id (UUID)",
+        "tenant_id (UUID)",
+        "correlation_id (UUID)",
+        "causation_id (UUID — appointment.requested event_id)",
+        "occurred_at (ISO 8601 timestamp)",
+        "failure_reason (string)",
+        "stripe_error_code (string, nullable)"
+      ]
+    },
+    {
+      "name": "payment.refunded",
+      "producer": "payment-service",
+      "consumers": [
+        { "service": "notification-service", "reason": "send refund confirmation to customer (optional enhancement in v1.0)" }
+      ],
+      "trigger": "Stripe refund confirmed after appointment.cancelled event processed by payment-service (UJ003 step 4, FR005). Related: BR009.",
+      "delivery": "atLeastOnce",
+      "idempotent": true,
+      "idempotencyMechanism": "InboxRecord deduplication on event_id. payment-service checks Payment.status = captured before processing refund.",
+      "channel": "SNS topic: payment-refunded-topic → SQS FIFO queue: notification-service-payment-refunded-queue. MessageGroupId = tenant_id.",
+      "keyPayloadFields": [
+        "event_id (UUID)",
+        "payment_id (UUID)",
+        "appointment_id (UUID)",
+        "tenant_id (UUID)",
+        "correlation_id (UUID)",
+        "causation_id (UUID — appointment.cancelled event_id)",
+        "occurred_at (ISO 8601 timestamp)",
+        "refund_amount (decimal)",
+        "currency (string ISO 4217)",
+        "stripe_refund_id (string)",
+        "customer_email (string — for notification routing)"
+      ]
+    },
+    {
+      "name": "payment.refund_failed",
+      "producer": "payment-service",
+      "consumers": [
+        { "service": "ops-service", "reason": "escalate to DLQ for manual resolution — refund failure must not block slot release (BR009, FR010)" }
+      ],
+      "trigger": "Stripe refund API returns an error after appointment.cancelled (UJ003, BR009). Slot is already released and customer already notified. Only the refund step has failed. Related: BR009.",
+      "delivery": "atLeastOnce",
+      "idempotent": true,
+      "idempotencyMechanism": "InboxRecord deduplication on event_id in ops-service.",
+      "channel": "SNS topic: payment-refund-failed-topic → SQS FIFO queue: payment-service-appointment-cancelled-queue-dlq (routed after 4 retries). MessageGroupId = tenant_id.",
+      "keyPayloadFields": [
+        "event_id (UUID)",
+        "payment_id (UUID)",
+        "appointment_id (UUID)",
+        "tenant_id (UUID)",
+        "correlation_id (UUID)",
+        "occurred_at (ISO 8601 timestamp)",
+        "failure_reason (string)",
+        "stripe_error_code (string, nullable)",
+        "refund_amount (decimal)",
+        "currency (string ISO 4217)",
+        "stripe_payment_intent_id (string — for manual refund via Stripe Dashboard)"
+      ]
+    },
+    {
+      "name": "notification.sent",
+      "producer": "notification-service",
+      "consumers": [],
+      "trigger": "notification-service successfully delivers a notification via SendGrid, Twilio, or Twilio WhatsApp (FR007). Updates NotificationRecord.status = sent.",
+      "delivery": "atLeastOnce",
+      "idempotent": true,
+      "idempotencyMechanism": "Not consumed by any downstream service in v1. Published for future analytics and audit purposes.",
+      "channel": "SNS topic: notification-sent-topic (no active subscribers in MVP). MessageGroupId = tenant_id.",
+      "keyPayloadFields": [
+        "event_id (UUID)",
+        "notification_id (UUID)",
+        "tenant_id (UUID)",
+        "correlation_id (UUID)",
+        "occurred_at (ISO 8601 timestamp)",
+        "recipient_type (enum: customer | staff | admin)",
+        "channel (enum: email | sms | whatsapp)",
+        "template_name (string)"
+      ]
+    },
+    {
+      "name": "notification.failed",
+      "producer": "notification-service",
+      "consumers": [
+        { "service": "ops-service", "reason": "raise alert if DLQ depth grows — notification failure after 4 retries indicates a systemic delivery problem (FR007, NFR016)" }
+      ],
+      "trigger": "notification-service exhausts 4 retry attempts for a notification delivery (FR007). NotificationRecord.status = dlq. Related: BR007, FR007.",
+      "delivery": "atLeastOnce",
+      "idempotent": true,
+      "idempotencyMechanism": "InboxRecord deduplication on event_id in ops-service.",
+      "channel": "SNS topic: notification-failed-topic → SQS FIFO queue: ops-service-notification-failed-queue. MessageGroupId = tenant_id.",
+      "keyPayloadFields": [
+        "event_id (UUID)",
+        "notification_id (UUID)",
+        "tenant_id (UUID)",
+        "correlation_id (UUID)",
+        "occurred_at (ISO 8601 timestamp)",
+        "recipient_type (enum: customer | staff | admin)",
+        "channel (enum: email | sms | whatsapp)",
+        "template_name (string)",
+        "failure_reason (string)",
+        "attempt_count (integer — always 4 when this event is published)",
+        "trigger_event_id (UUID — the AppointmentEvent that triggered this notification)"
+      ]
+    },
+    {
+      "name": "analytics.velocity_spike_detected",
+      "producer": "analytics-service",
+      "consumers": [
+        { "service": "notification-service", "reason": "deliver velocity spike alert to tenant admin (FR009)" },
+        { "service": "ops-service", "reason": "log platform-level anomaly for operator visibility (FR009)" }
+      ],
+      "trigger": "analytics-service detects booking velocity > 3x the tenant's historical 5-minute average (FR009). Calculated over a sliding 5-minute Kinesis window. Related: FR009. In scope from v1.0 per roadmap.",
+      "delivery": "atLeastOnce",
+      "idempotent": true,
+      "idempotencyMechanism": "InboxRecord deduplication on event_id in all consumers.",
+      "channel": "SNS topic: analytics-velocity-spike-topic → SQS FIFO queues: notification-service-analytics-alert-queue, ops-service-analytics-alert-queue. MessageGroupId = tenant_id.",
+      "keyPayloadFields": [
+        "event_id (UUID)",
+        "tenant_id (UUID)",
+        "correlation_id (UUID)",
+        "occurred_at (ISO 8601 timestamp)",
+        "window_start (ISO 8601 timestamp)",
+        "window_end (ISO 8601 timestamp)",
+        "booking_count_in_window (integer)",
+        "historical_average (decimal)",
+        "velocity_ratio (decimal — booking_count / historical_average)",
+        "admin_email (string — for notification routing)"
+      ]
+    },
+    {
+      "name": "analytics.cancellation_rate_alert",
+      "producer": "analytics-service",
+      "consumers": [
+        { "service": "notification-service", "reason": "deliver cancellation rate alert to tenant admin (FR009)" },
+        { "service": "ops-service", "reason": "log platform-level anomaly (FR009)" }
+      ],
+      "trigger": "analytics-service detects cancellation_rate > 30% over the last 50 bookings for a tenant (FR009). Related: FR009. In scope from v1.0 per roadmap.",
+      "delivery": "atLeastOnce",
+      "idempotent": true,
+      "idempotencyMechanism": "InboxRecord deduplication on event_id in all consumers.",
+      "channel": "SNS topic: analytics-cancellation-alert-topic → SQS FIFO queues: notification-service-analytics-alert-queue, ops-service-analytics-alert-queue. MessageGroupId = tenant_id.",
+      "keyPayloadFields": [
+        "event_id (UUID)",
+        "tenant_id (UUID)",
+        "correlation_id (UUID)",
+        "occurred_at (ISO 8601 timestamp)",
+        "cancellation_rate (decimal — 0.0 to 1.0)",
+        "sample_size (integer — number of bookings in the window, always 50)",
+        "window_start (ISO 8601 timestamp)",
+        "window_end (ISO 8601 timestamp)",
+        "admin_email (string — for notification routing)"
+      ]
+    },
+    {
+      "name": "replay.started",
+      "producer": "ops-service",
+      "consumers": [],
+      "trigger": "Platform Operator initiates a tenant event replay via the ops console (FR011, UJ006 step 5). ops-service creates a ReplayJob record and publishes this event. Related: FR011.",
+      "delivery": "atLeastOnce",
+      "idempotent": true,
+      "idempotencyMechanism": "No active downstream subscribers in v1 — consumed by monitoring/Grafana via log ingestion.",
+      "channel": "SNS topic: replay-started-topic (no active SQS subscribers; consumed via log pipeline for Grafana visibility). MessageGroupId = tenant_id.",
+      "keyPayloadFields": [
+        "event_id (UUID)",
+        "job_id (UUID — ReplayJob.job_id)",
+        "tenant_id (UUID)",
+        "correlation_id (UUID)",
+        "occurred_at (ISO 8601 timestamp)",
+        "initiated_by (UUID — operator user_id)",
+        "scope_type (enum: full_tenant | date_range | event_type | specific_ids)",
+        "scope_params (object — e.g. {\"from\": \"2026-01-01\", \"to\": \"2026-06-01\"})"
+      ]
+    },
+    {
+      "name": "replay.completed",
+      "producer": "ops-service",
+      "consumers": [],
+      "trigger": "ops-service finishes re-publishing all scoped AppointmentEvents to SNS (FR011, UJ006 step 6). ReplayJob.status = completed.",
+      "delivery": "atLeastOnce",
+      "idempotent": true,
+      "idempotencyMechanism": "No active downstream subscribers in v1 — consumed via log pipeline.",
+      "channel": "SNS topic: replay-completed-topic (no active SQS subscribers). MessageGroupId = tenant_id.",
+      "keyPayloadFields": [
+        "event_id (UUID)",
+        "job_id (UUID)",
+        "tenant_id (UUID)",
+        "correlation_id (UUID)",
+        "occurred_at (ISO 8601 timestamp)",
+        "events_published (integer)",
+        "duration_seconds (integer)"
+      ]
+    }
+  ]
 }

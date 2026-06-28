@@ -1,9 +1,199 @@
 {
   "_ai": "AI fills this. Derived from: architecture.json + non-functional-requirements.json + product.json (pricing tiers). Do not edit manually.",
   "infrastructure": {
-    "cloud": "",
-    "backend": {},
-    "frontend": {},
-    "services": {}
+    "cloud": "AWS",
+    "region": "eu-west-1 (Ireland)",
+    "regionRationale": "Primary customer base is European (EU GDPR jurisdiction). eu-west-1 satisfies data residency requirements, minimises latency for UK and mainland Europe, and is within the same AWS region group as eu-central-1 (Frankfurt) used for cross-region backup replication.",
+    "backend": {
+      "language": "TypeScript",
+      "framework": "NestJS (modular monorepo, one NestJS application per bounded context service)",
+      "buildTool": "Turborepo (monorepo task orchestration) with esbuild (fast TypeScript compilation)",
+      "containerisation": "Docker (multi-stage builds; non-root user; distroless base images for production)",
+      "orchestration": "AWS ECS Fargate (serverless containers — no EC2 node management; auto-scaling per service via Application Auto Scaling on CPU/queue depth)",
+      "serviceDiscovery": "AWS Cloud Map (private DNS namespaces per environment) + AWS Application Load Balancer (path-based routing to ECS services)",
+      "databaseMigrations": "Flyway (versioned, forward-only migrations; run as ECS one-off task in deployment pipeline before service rollout)",
+      "connectionPooling": "PgBouncer (transaction-mode pooling; deployed as ECS sidecar per data-plane service)"
+    },
+    "frontend": {
+      "framework": "Next.js 14 (React Server Components for booking pages; client components for interactive slot browser)",
+      "hosting": "AWS Amplify Hosting (CI/CD integration; server-side rendering on Lambda@Edge; Git-based deployments)",
+      "cdn": "Amazon CloudFront (static assets; booking page HTML cached at edge with tenant_id-aware cache keys)",
+      "tenantRouting": "Subdomain routing: {tenant_slug}.anji-schedulo.com for Starter and Pro. Custom domain (CNAME to CloudFront) for Enterprise with SSL via AWS Certificate Manager (product.json Enterprise extras).",
+      "stateManagement": "Zustand (lightweight client state for booking wizard steps)"
+    },
+    "services": {
+      "database": {
+        "technology": "PostgreSQL 15",
+        "starterPro": {
+          "instanceType": "db.t4g.medium (shared cluster for Starter and Pro tenants — ADR002)",
+          "multiAZ": true,
+          "storageType": "gp3 SSD, 100 GB initial with autoscaling to 1 TB",
+          "extensions": ["pgcrypto (UUID generation, column encryption)", "pg_stat_statements (query performance monitoring)", "pg_trgm (fuzzy name search on services/staff)"],
+          "connectionPooler": "PgBouncer (transaction mode, max 200 connections per service)",
+          "rlsEnforcement": "SET LOCAL app.tenant_id at transaction start; RLS policies on all tables; safe default returns zero rows when context is null (BR005, ADR002)"
+        },
+        "enterprise": {
+          "instanceType": "db.r7g.large (dedicated cluster per Enterprise tenant — product.json Enterprise extras)",
+          "multiAZ": true,
+          "storageType": "io2 SSD, 200 GB initial",
+          "rlsEnforcement": "Same RLS policies as shared cluster for defence in depth (BR005)"
+        },
+        "backupStrategy": "AWS RDS automated daily snapshots (retained 7 days). Point-in-time recovery (PITR) with WAL archiving to S3 — RPO: 5 minutes. Manual snapshot taken before every schema migration. Cross-region snapshot copy to eu-central-1 (Frankfurt) nightly.",
+        "encryptionAtRest": "AES-256 via AWS KMS (aws/rds managed key for Starter/Pro; customer-managed KMS key for Enterprise)",
+        "encryptionInTransit": "TLS 1.3 enforced (ssl=require in all connection strings; RDS parameter group ssl_min_protocol_version=TLSv1.2)"
+      },
+      "cache": {
+        "technology": "Redis 7 (AWS ElastiCache, Valkey-compatible)",
+        "instanceType": "cache.t4g.medium (single-shard cluster mode disabled; single AZ with read replica in alternate AZ)",
+        "useCases": [
+          { "purpose": "Slot availability cache", "keyPattern": "availability:{tenant_id}:{staff_id}:{date}", "ttl": "30 seconds — short TTL to balance read performance with freshness (NFR005)" },
+          { "purpose": "TenantConfig hot cache", "keyPattern": "tenant_config:{tenant_id}", "ttl": "300 seconds — invalidated on tenant.configured event" },
+          { "purpose": "BookingIdempotencyKey hot lookup", "keyPattern": "idempotency:{tenant_id}:{idempotency_key}", "ttl": "86400 seconds (24 hours)" },
+          { "purpose": "Distributed rate limit counters", "keyPattern": "rate_limit:{tenant_id}:{endpoint}", "ttl": "60 seconds" }
+        ],
+        "encryptionAtRest": "AES-256 via AWS KMS",
+        "encryptionInTransit": "TLS 1.3 (in-transit encryption enabled on ElastiCache cluster)"
+      },
+      "messageBus": {
+        "technology": "AWS SNS (fan-out) + AWS SQS FIFO (per-consumer delivery)",
+        "topology": "One SNS topic per event type (e.g. appointment-confirmed-topic). Each consumer service has its own SQS FIFO queue per subscribed topic (e.g. notification-service-appointment-confirmed-queue). Subscriptions use SNS-to-SQS fan-out with filter policies where needed.",
+        "ordering": "SQS FIFO with MessageGroupId = tenant_id guarantees per-tenant ordering without blocking other tenants (NFR011, ADR003)",
+        "dlqConfiguration": "maxReceiveCount = 4 on all source queues. DLQ named {source-queue-name}-dlq. DLQ retention: 14 days.",
+        "retentionPeriod": "14 days on all queues (satisfies NFR003 — messages durable during temporary consumer downtime)",
+        "encryptionAtRest": "AWS KMS encryption enabled on all SNS topics and SQS queues (NFR013)",
+        "queueList": [
+          "notification-service-tenant-provisioned-queue",
+          "billing-service-tenant-provisioned-queue",
+          "booking-command-service-tenant-configured-queue",
+          "availability-service-tenant-configured-queue",
+          "booking-command-service-tenant-suspended-queue",
+          "notification-service-appointment-requested-queue",
+          "notification-service-appointment-confirmed-queue",
+          "dashboard-service-appointment-confirmed-queue",
+          "analytics-service-appointment-confirmed-queue",
+          "availability-service-appointment-confirmed-queue",
+          "payment-service-appointment-cancelled-queue",
+          "notification-service-appointment-cancelled-queue",
+          "dashboard-service-appointment-cancelled-queue",
+          "availability-service-appointment-cancelled-queue",
+          "analytics-service-appointment-cancelled-queue",
+          "notification-service-appointment-rescheduled-queue",
+          "dashboard-service-appointment-rescheduled-queue",
+          "availability-service-appointment-rescheduled-queue",
+          "dashboard-service-appointment-completed-queue",
+          "booking-command-service-payment-captured-queue",
+          "booking-command-service-payment-failed-queue",
+          "notification-service-payment-refunded-queue",
+          "ops-service-notification-failed-queue",
+          "notification-service-analytics-alert-queue",
+          "ops-service-analytics-alert-queue",
+          "ops-service-tenant-deprovisioned-queue"
+        ]
+      },
+      "objectStorage": {
+        "technology": "AWS S3",
+        "buckets": [
+          {
+            "name": "anji-schedulo-tenant-exports-{env}",
+            "purpose": "Tenant data export archives (FR012). Contains NDJSON archives of all tenant data scoped per tenant.",
+            "versioning": true,
+            "lifecyclePolicy": "Expire objects 90 days after creation (BR012). Objects are also deleted via signed URL expiry (24 hours for download links, FR012).",
+            "encryption": "SSE-KMS (customer-managed key per environment)",
+            "access": "Private; presigned URLs generated by ops-service with 24-hour expiry"
+          },
+          {
+            "name": "anji-schedulo-event-archives-{env}",
+            "purpose": "Monthly exports of appointment_events table for long-term event log durability and disaster recovery. Source for replay if RDS is unavailable.",
+            "versioning": true,
+            "lifecyclePolicy": "Standard storage for 1 year; transition to S3 Glacier Flexible Retrieval after 1 year; retain payment-related events for 7 years (BR012).",
+            "encryption": "SSE-KMS",
+            "access": "Private; accessible to ops-service and outbox-relay only"
+          },
+          {
+            "name": "anji-schedulo-audit-logs-{env}",
+            "purpose": "Immutable export of AuditLog table for permanent retention (BR012, BR014). Exported nightly.",
+            "versioning": true,
+            "lifecyclePolicy": "Object Lock (WORM mode) — no deletion. Indefinite retention.",
+            "encryption": "SSE-KMS",
+            "access": "Private; write-only from audit export job; read by ops-service for compliance queries"
+          }
+        ]
+      },
+      "secretsManager": {
+        "technology": "AWS Secrets Manager",
+        "secrets": [
+          {
+            "name": "anji-schedulo/{env}/db/password",
+            "contents": "PostgreSQL master password and application user passwords",
+            "rotationPeriod": "30 days (automatic rotation via Secrets Manager Lambda rotation function)",
+            "injectionMethod": "ECS task definition secrets injection (ARN reference; injected as environment variables at container start)"
+          },
+          {
+            "name": "anji-schedulo/{env}/stripe/secret-key",
+            "contents": "Stripe secret API key (payment-service)",
+            "rotationPeriod": "90 days (manual rotation; Stripe key rotation workflow documented in ops runbook)",
+            "injectionMethod": "ECS task definition secrets injection"
+          },
+          {
+            "name": "anji-schedulo/{env}/jwt/private-key",
+            "contents": "RS256 private key for JWT signing (api-gateway)",
+            "rotationPeriod": "90 days (manual rotation with rolling key support — new key published, old key still accepted for 15-minute grace period)",
+            "injectionMethod": "ECS task definition secrets injection"
+          },
+          {
+            "name": "anji-schedulo/{env}/jwt/public-key",
+            "contents": "RS256 public key for JWT validation (all services that validate tokens directly)",
+            "rotationPeriod": "Rotated in sync with private-key",
+            "injectionMethod": "ECS task definition secrets injection"
+          },
+          {
+            "name": "anji-schedulo/{env}/sendgrid/api-key",
+            "contents": "SendGrid API key (notification-service)",
+            "rotationPeriod": "180 days (manual — SendGrid does not support automated rotation)",
+            "injectionMethod": "ECS task definition secrets injection"
+          },
+          {
+            "name": "anji-schedulo/{env}/twilio/auth-token",
+            "contents": "Twilio Account SID and Auth Token (notification-service, Pro and Enterprise only)",
+            "rotationPeriod": "90 days (manual)",
+            "injectionMethod": "ECS task definition secrets injection"
+          },
+          {
+            "name": "anji-schedulo/{env}/redis/auth-token",
+            "contents": "ElastiCache Redis AUTH token",
+            "rotationPeriod": "30 days (automatic via Secrets Manager + ElastiCache token rotation)",
+            "injectionMethod": "ECS task definition secrets injection"
+          }
+        ]
+      },
+      "streamProcessing": {
+        "technology": "AWS Kinesis Data Streams",
+        "shards": 2,
+        "partitionKey": "tenant_id",
+        "retentionPeriod": "24 hours",
+        "useCases": [
+          "Booking velocity spike detection (sliding 5-minute window aggregation per tenant, FR009)",
+          "Cancellation rate monitoring (rolling 50-booking window per tenant, FR009)"
+        ],
+        "consumerService": "analytics-service (Enhanced Fan-Out consumer for low-latency processing)",
+        "note": "Kinesis is in scope from v1.0. MVP analytics-service reads directly from SQS without Kinesis. Kinesis is introduced when sub-second anomaly detection is required."
+      },
+      "cicd": {
+        "platform": "GitHub Actions",
+        "environments": ["dev", "staging", "production"],
+        "pipelineSteps": [
+          "Lint + type-check (tsc --noEmit, ESLint)",
+          "Unit tests (Jest)",
+          "Integration tests (real PostgreSQL via Docker Compose; cross-tenant isolation tests — NFR012)",
+          "Build Docker images (multi-stage, esbuild)",
+          "Push to Amazon ECR",
+          "Run Flyway migrations (ECS one-off task against target environment)",
+          "Deploy ECS services (rolling update, 50% minimum healthy, 200% maximum)",
+          "Smoke tests (POST /health on each service)",
+          "Rollback on smoke test failure (previous task definition reactivated)"
+        ],
+        "branchStrategy": "main → production; release/* → staging; feature/* → dev on PR"
+      }
+    }
   }
 }

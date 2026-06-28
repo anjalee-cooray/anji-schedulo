@@ -1,46 +1,183 @@
 {
-  "_fill": "YOU fill the businessJourney section of each journey. Describe the steps from the user's perspective — not the technical implementation. AI will fill the implementation section.",
   "userJourneys": [
     {
       "id": "UJ001",
-      "name": "Journey Name (e.g. User Signup, Checkout, Password Reset)",
+      "name": "Tenant Onboarding",
       "persona": "P1",
-      "priority": "critical | high | medium | low",
-      "relatedRequirements": ["FR001"],
+      "priority": "critical",
+      "relatedRequirements": ["FR001", "FR002"],
       "businessJourney": {
-        "goal": "What the user is trying to accomplish.",
+        "goal": "A new business goes from sign-up to accepting live bookings.",
         "steps": [
-          "Step 1 — what the user does",
-          "Step 2 — what happens next",
-          "Step 3 — how it ends"
+          "Business owner submits registration form with business name, email, and plan",
+          "Platform acknowledges registration and begins provisioning",
+          "Owner receives welcome email with setup link",
+          "Owner configures business hours",
+          "Owner adds services with duration and price",
+          "Owner adds staff members",
+          "Booking page is live and accepting customer appointments"
         ],
-        "successOutcome": "How the user knows they succeeded."
+        "successOutcome": "First customer appointment can be booked within 30 minutes of sign-up"
       },
       "implementation": {
-        "_note": "AI fills this section based on your architecture and functional requirements.",
-        "architecture": "",
-        "services": [],
-        "patterns": [],
-        "consistency": ""
+        "architecture": "Pub/Sub fan-out on tenant.provisioned event",
+        "services": ["tenant-service", "notification-service", "billing-service"],
+        "patterns": ["Pub/Sub", "Transactional Outbox"],
+        "consistency": "Eventually consistent — provisioning steps are independent subscribers"
       }
     },
     {
       "id": "UJ002",
-      "name": "Second Journey",
-      "persona": "P2",
-      "priority": "high",
-      "relatedRequirements": ["FR002"],
+      "name": "Appointment Booking",
+      "persona": "P3",
+      "priority": "critical",
+      "relatedRequirements": ["FR003", "FR004"],
       "businessJourney": {
-        "goal": "Goal.",
-        "steps": ["Step 1", "Step 2"],
-        "successOutcome": "Success outcome."
+        "goal": "A customer books an appointment with a business.",
+        "steps": [
+          "Customer visits the tenant's booking page",
+          "Customer selects a service",
+          "Customer selects a staff member (or any available)",
+          "Customer chooses an available date and time slot",
+          "Customer enters contact details",
+          "Customer completes payment if required",
+          "Customer receives confirmation with full appointment details"
+        ],
+        "successOutcome": "Confirmed appointment in under 2 minutes, confirmation received within 30 seconds"
       },
       "implementation": {
-        "_note": "AI fills this section.",
-        "architecture": "",
-        "services": [],
-        "patterns": [],
-        "consistency": ""
+        "architecture": "Saga Orchestration",
+        "services": ["booking-command-service", "availability-service", "payment-service", "notification-service"],
+        "patterns": ["Saga Orchestration", "Transactional Outbox", "Idempotent Consumer", "Inbox Pattern", "Event-Carried State Transfer"],
+        "consistency": "Synchronous saga with compensation — atomic success or failure",
+        "compensations": [
+          "Slot unavailable → no charge, 409 returned",
+          "Payment failed → slot released, 402 returned"
+        ]
+      }
+    },
+    {
+      "id": "UJ003",
+      "name": "Appointment Cancellation",
+      "persona": "P3",
+      "priority": "critical",
+      "relatedRequirements": ["FR005"],
+      "businessJourney": {
+        "goal": "A customer cancels a confirmed appointment within the allowed window.",
+        "steps": [
+          "Customer requests cancellation of their appointment",
+          "System validates cancellation is within policy window",
+          "Customer receives cancellation confirmation",
+          "Refund is processed if applicable",
+          "Staff member is notified of the cancellation",
+          "Slot becomes available for new bookings"
+        ],
+        "successOutcome": "Slot re-opened within 10 seconds; customer notified within 30 seconds; refund initiated within 60 seconds"
+      },
+      "implementation": {
+        "architecture": "Saga Choreography",
+        "services": ["booking-command-service", "cancellation-saga-service", "payment-service", "availability-service", "notification-service"],
+        "patterns": ["Saga Choreography", "Dead Letter Queue", "Retry + Backoff"],
+        "consistency": "Eventually consistent — steps are independent",
+        "failureHandling": "Refund failure routes to DLQ for manual ops review; does not block slot release"
+      }
+    },
+    {
+      "id": "UJ004",
+      "name": "Appointment Rescheduling",
+      "persona": "P3",
+      "priority": "high",
+      "relatedRequirements": ["FR006"],
+      "businessJourney": {
+        "goal": "A customer moves their appointment to a different time.",
+        "steps": [
+          "Customer requests a new time for their existing appointment",
+          "Customer selects a new available slot",
+          "System confirms availability of the new slot",
+          "Original slot is released",
+          "New slot is confirmed",
+          "Customer receives rescheduling confirmation"
+        ],
+        "successOutcome": "Rescheduled appointment confirmed; original slot freed for new bookings"
+      },
+      "implementation": {
+        "architecture": "Sequential: new slot saga → if successful, cancel old slot",
+        "patterns": ["Saga Orchestration", "Transactional Outbox"],
+        "consistency": "Atomic — original booking unchanged if new slot unavailable"
+      }
+    },
+    {
+      "id": "UJ005",
+      "name": "Tenant Dashboard Review",
+      "persona": "P1",
+      "priority": "high",
+      "relatedRequirements": ["FR008"],
+      "businessJourney": {
+        "goal": "A tenant admin checks today's performance at the start of the business day.",
+        "steps": [
+          "Admin opens the dashboard",
+          "Admin views today's confirmed bookings and upcoming schedule",
+          "Admin checks cancellation rate and revenue",
+          "Admin identifies peak hours for staffing decisions",
+          "Admin acts on any alerts (e.g. high cancellation rate)"
+        ],
+        "successOutcome": "Full operational picture available in under 1 second, updated within 5 seconds of each booking event"
+      },
+      "implementation": {
+        "architecture": "CQRS + Materialized View",
+        "services": ["dashboard-service", "booking-query-service"],
+        "patterns": ["CQRS", "Materialized View", "Event Aggregator"],
+        "consistency": "Eventually consistent — dashboard lag < 5 seconds"
+      }
+    },
+    {
+      "id": "UJ006",
+      "name": "Platform Operator DLQ Triage",
+      "persona": "P4",
+      "priority": "high",
+      "relatedRequirements": ["FR010", "FR011"],
+      "businessJourney": {
+        "goal": "Platform operator resolves a stuck event in the dead letter queue.",
+        "steps": [
+          "Operator receives Grafana alert: DLQ depth > 0",
+          "Operator opens Ops console and inspects failed event payload",
+          "Operator identifies failure reason (e.g. malformed payload, downstream timeout)",
+          "Operator corrects the payload or acknowledges the root cause",
+          "Operator re-queues the event for reprocessing",
+          "Operator confirms the event is processed successfully"
+        ],
+        "successOutcome": "Failed event resolved within SLA (4 hours); audit trail preserved"
+      },
+      "implementation": {
+        "architecture": "Dead Letter Queue + Ops Service",
+        "services": ["ops-service"],
+        "patterns": ["Dead Letter Queue", "Replay Pattern"],
+        "consistency": "Manual intervention — idempotent re-queue"
+      }
+    },
+    {
+      "id": "UJ007",
+      "name": "Tenant Data Export and Offboarding",
+      "persona": "P1",
+      "priority": "medium",
+      "relatedRequirements": ["FR012", "FR013"],
+      "businessJourney": {
+        "goal": "A departing tenant exports their data and is cleanly offboarded.",
+        "steps": [
+          "Tenant admin requests a full data export",
+          "Platform generates structured archive of all tenant data",
+          "Signed download link sent to verified owner email",
+          "Tenant downloads their data",
+          "After 30-day window, operator initiates deprovisioning",
+          "Data retained for 90 days, then permanently deleted"
+        ],
+        "successOutcome": "Tenant departs with full data portability; platform has no residual data after retention period"
+      },
+      "implementation": {
+        "architecture": "Ops Service scoped export + status machine deprovisioning",
+        "services": ["ops-service", "tenant-service"],
+        "patterns": ["Pub/Sub (tenant.deprovisioned)"],
+        "consistency": "Synchronous export generation; async deprovisioning notifications"
       }
     }
   ]

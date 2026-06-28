@@ -1,4 +1,209 @@
 {
   "_ai": "AI fills this. Derived from: functional-requirements.json + domain.json + user-journeys.json. Do not edit manually.",
-  "boundedContexts": []
+  "boundedContexts": [
+    {
+      "name": "Tenant Context",
+      "description": "Owns all tenant lifecycle operations — registration, configuration, staff management, service catalogue, suspension, and deprovisioning. The authoritative source for tenant identity and plan entitlements. Makes all decisions about what a tenant is permitted to configure and when they are allowed to accept bookings.",
+      "entities": [
+        "Tenant",
+        "TenantConfig",
+        "Service",
+        "StaffMember",
+        "WorkingHours",
+        "StaffBlock",
+        "AuditLog",
+        "OutboxRecord"
+      ],
+      "service": "tenant-service",
+      "publishes": [
+        "tenant.provisioned",
+        "tenant.configured",
+        "tenant.suspended",
+        "tenant.deprovisioned",
+        "tenant.data_exported"
+      ],
+      "subscribes": [
+        "billing.subscription_activated (→ advance Tenant status from provisioning to active after billing confirms)"
+      ],
+      "externalDependencies": [
+        "Stripe Billing (subscription creation, plan change, cancellation APIs)"
+      ],
+      "patternNotes": "Transactional Outbox (NFR003): all events written to outbox_records in the same DB transaction as the Tenant state change. Pool with RLS (BR005): tenant_id on every table; safe-by-default RLS policy. Status machine enforces BR011 (suspended → 30-day read-only window before deprovisioning). AuditLog written on every write operation (BR014)."
+    },
+    {
+      "name": "Booking Context",
+      "description": "Owns appointment creation, slot availability computation, slot locking, idempotency enforcement, and the appointment event stream. The booking saga (orchestrated) and appointment event log live here. This context makes all decisions about whether a slot can be booked and persists the immutable AppointmentEvent history used by all downstream read models.",
+      "entities": [
+        "Appointment",
+        "AppointmentEvent",
+        "SlotLock",
+        "BookingIdempotencyKey",
+        "OutboxRecord",
+        "InboxRecord",
+        "AuditLog"
+      ],
+      "service": "booking-command-service",
+      "publishes": [
+        "appointment.requested",
+        "appointment.confirmed",
+        "appointment.cancelled",
+        "appointment.rescheduled",
+        "appointment.completed",
+        "appointment.failed"
+      ],
+      "subscribes": [
+        "tenant.configured (→ refresh local cache of TenantConfig for booking rule enforcement)"
+      ],
+      "externalDependencies": [],
+      "patternNotes": "Saga Orchestration (BR004, FR004): BookingCommandService coordinates slot-lock → payment-capture → appointment.confirmed in a synchronous sequence with full compensation on failure. Transactional Outbox (NFR003): appointment events written to outbox in same transaction as SlotLock and AppointmentEvent inserts. Idempotent Consumer via BookingIdempotencyKey (BR006, FR004). Inbox Pattern on incoming tenant.configured events (NFR009)."
+    },
+    {
+      "name": "Availability Context",
+      "description": "Owns the computation of open booking slots for a tenant's staff. Derives available slots by joining WorkingHours with StaffBlocks and existing SlotLocks. This is a read-heavy context; it caches computed availability in Redis to meet the 500ms p95 latency target. It does not write any domain events.",
+      "entities": [
+        "WorkingHours",
+        "StaffBlock",
+        "SlotLock"
+      ],
+      "service": "availability-service",
+      "publishes": [],
+      "subscribes": [
+        "tenant.configured (→ invalidate cached availability when config changes)",
+        "appointment.confirmed (→ invalidate cache for the locked slot)",
+        "appointment.cancelled (→ invalidate cache to re-surface the freed slot)"
+      ],
+      "externalDependencies": [
+        "Redis (ElastiCache — slot availability cache, TTL 30 seconds)"
+      ],
+      "patternNotes": "Cache-Aside pattern for slot availability (NFR005, NFR011). Tenant isolation enforced at cache key level: key format is availability:{tenant_id}:{staff_id}:{date}. Per-tenant cache invalidation on appointment.confirmed and appointment.cancelled events. Working hours and blocks are read from PostgreSQL (via tenant-service data) using RLS."
+    },
+    {
+      "name": "Payment Context",
+      "description": "Owns payment capture and refund operations via Stripe. Called synchronously during the booking saga for payment capture. Subscribes to cancellation events for refund initiation. Maintains the Payment record and its lifecycle. Makes all decisions about whether a charge succeeded or a refund is possible.",
+      "entities": [
+        "Payment",
+        "OutboxRecord",
+        "InboxRecord"
+      ],
+      "service": "payment-service",
+      "publishes": [
+        "payment.captured",
+        "payment.failed",
+        "payment.refunded",
+        "payment.refund_failed"
+      ],
+      "subscribes": [
+        "appointment.cancelled (→ initiate refund if payment was captured)"
+      ],
+      "externalDependencies": [
+        "Stripe (payment capture via PaymentIntents API, refund via Refunds API, webhook receipts for async confirmation)"
+      ],
+      "patternNotes": "Circuit Breaker on outbound Stripe API calls (NFR002) — prevents booking saga from hanging on Stripe outage. payment.refund_failed routes to DLQ for manual ops resolution (BR009) — refund failure never blocks slot release or notification. Idempotent Stripe requests via idempotency_key header passed from appointment_id. Inbox Pattern for appointment.cancelled deduplication (NFR009)."
+    },
+    {
+      "name": "Notification Context",
+      "description": "Owns the delivery of lifecycle communications to customers and staff members across email, SMS, and WhatsApp channels. Fully decoupled from all booking operations — notification failures are isolated and can never affect booking availability or correctness (BR007). Tracks all delivery attempts in NotificationRecord.",
+      "entities": [
+        "NotificationRecord",
+        "InboxRecord"
+      ],
+      "service": "notification-service",
+      "publishes": [
+        "notification.sent",
+        "notification.failed"
+      ],
+      "subscribes": [
+        "appointment.confirmed (→ send confirmation to customer and staff)",
+        "appointment.cancelled (→ send cancellation notice to customer and staff)",
+        "appointment.rescheduled (→ send rescheduling confirmation to customer)",
+        "appointment.requested (→ send booking-in-progress acknowledgement, optional)",
+        "tenant.provisioned (→ send welcome email to tenant admin)"
+      ],
+      "externalDependencies": [
+        "SendGrid (transactional email — Starter and Pro tiers)",
+        "Twilio (SMS — Pro and Enterprise tiers)",
+        "Twilio WhatsApp API (WhatsApp — Enterprise tier only)"
+      ],
+      "patternNotes": "Event-Carried State Transfer: notification content derived entirely from event payload — no back-call to booking-command-service (FR007). Retry with exponential backoff: up to 4 retries per notification (FR007). After 4 failures, NotificationRecord.status = dlq and ops alert raised. Inbox Pattern for all consumed events to ensure idempotent delivery (NFR009). Channel selection gated on tenant plan entitlements from event payload."
+    },
+    {
+      "name": "Dashboard Context",
+      "description": "Owns the CQRS read side for tenant operational dashboards. Maintains TenantDashboardView as a pre-aggregated materialised view updated incrementally on every AppointmentEvent. Serves < 200ms dashboard responses directly from the view without any join to the write-side tables. Completely read-side — it writes no domain events.",
+      "entities": [
+        "TenantDashboardView",
+        "InboxRecord"
+      ],
+      "service": "dashboard-service",
+      "publishes": [],
+      "subscribes": [
+        "appointment.confirmed (→ increment confirmed_count, add revenue)",
+        "appointment.cancelled (→ increment cancelled_count, recalculate cancellation_rate)",
+        "appointment.rescheduled (→ increment rescheduled_count)",
+        "appointment.completed (→ no count change, update peak_hour)"
+      ],
+      "externalDependencies": [],
+      "patternNotes": "CQRS + Materialised View (NFR006, FR008, UJ005). Idempotent incremental updates via last_event_id watermark in TenantDashboardView (NFR009). Rebuild from full AppointmentEvent replay triggered by ops-service (FR011). Dashboard lag target < 5 seconds under normal load (NFR008). RLS enforced: tenant_id scope on all view reads."
+    },
+    {
+      "name": "Analytics Context",
+      "description": "Owns real-time stream processing of booking events to detect anomalies — booking velocity spikes and elevated cancellation rates. Surfaces alerts to tenant admins and the Platform Operator within 60 seconds of detection (FR009). Maintains the AnalyticsSummary read model.",
+      "entities": [
+        "AnalyticsSummary",
+        "InboxRecord"
+      ],
+      "service": "analytics-service",
+      "publishes": [
+        "analytics.velocity_spike_detected",
+        "analytics.cancellation_rate_alert"
+      ],
+      "subscribes": [
+        "appointment.confirmed (→ update booking velocity window)",
+        "appointment.cancelled (→ update cancellation rate window)"
+      ],
+      "externalDependencies": [
+        "AWS Kinesis Data Streams (real-time event ingestion for sliding-window aggregation)"
+      ],
+      "patternNotes": "Stream Processing via Kinesis (FR009). Sliding 5-minute window for velocity spike detection; rolling 50-booking window for cancellation rate. Alert delivery < 60 seconds (FR009). Tenant isolation: per-tenant partitioning in Kinesis via partition key = tenant_id (NFR011). Analytics alerts out of scope for MVP — introduced in v1.0 (roadmap.json)."
+    },
+    {
+      "name": "Operations Context",
+      "description": "Owned by the Platform Operator (P4). Provides DLQ inspection and re-queue tooling, tenant event replay, data export, and deprovisioning orchestration. The cross-cutting operational plane of the platform — it can read across tenants (with operator auth) and trigger infrastructure-level actions.",
+      "entities": [
+        "ReplayJob",
+        "AuditLog",
+        "OutboxRecord"
+      ],
+      "service": "ops-service",
+      "publishes": [
+        "replay.started",
+        "replay.completed",
+        "tenant.data_exported"
+      ],
+      "subscribes": [
+        "All DLQ events (→ surface in ops console for triage)"
+      ],
+      "externalDependencies": [
+        "AWS S3 (tenant-exports bucket — signed URL generation for data exports, FR012)",
+        "AWS SQS (DLQ read/re-queue operations for all consumer queues, FR010)"
+      ],
+      "patternNotes": "Replay Pattern (FR011): ops-service reads AppointmentEvent records from PostgreSQL and re-publishes them to SNS with replay_job_id tag. Live operations continue unaffected. DLQ Triage (FR010, NFR016): ops-service polls all DLQ queues and surfaces entries in a console UI with full payload inspection. Operator re-queue writes to the source SQS queue and preserves audit log. Cross-tenant read access gated on platform_operator role (security.json roles)."
+    },
+    {
+      "name": "Outbox Relay Context",
+      "description": "A distinct deployable service responsible solely for polling the outbox_records tables across all services and publishing pending events to SNS topics. Separating this concern from the domain services means the polling logic is centralised, observable, and independently scalable. It writes no domain data — only marks outbox_records as published.",
+      "entities": [
+        "OutboxRecord"
+      ],
+      "service": "outbox-relay",
+      "publishes": [
+        "All events via SNS (tenant.*, appointment.*, payment.*, notification.*, analytics.*, replay.*)"
+      ],
+      "subscribes": [],
+      "externalDependencies": [
+        "AWS SNS (publishes to per-event-type topics)",
+        "PostgreSQL (polls outbox_records WHERE published_at IS NULL)"
+      ],
+      "patternNotes": "Transactional Outbox Relay (NFR003). Polls every 500ms. Marks published_at only after SNS publish succeeds (at-least-once guarantee). Deduplication handled by consumer-side InboxRecord pattern. Separate per-service outbox tables to allow independent deployment and scaling. Monitoring: alert if outbox backlog grows beyond 100 records or relay lag exceeds 10 seconds."
+    }
+  ]
 }

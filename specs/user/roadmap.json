@@ -1,33 +1,84 @@
 {
-  "_fill": "YOU fill this. What will you ship and when? Break your roadmap into phases with clear goals and feature lists.",
   "roadmap": [
     {
       "phase": "MVP",
-      "status": "Design | Development | Complete",
-      "goal": "One sentence: what does this phase prove or deliver?",
+      "status": "Design",
+      "goal": "Core booking platform live with three paid tenants.",
       "features": [
-        "Feature or capability included in this phase",
-        "Add more features"
+        "Tenant self-service onboarding (Starter plan)",
+        "Service and staff configuration",
+        "Slot availability browsing",
+        "Appointment booking (payment optional)",
+        "Appointment cancellation and rescheduling",
+        "Email notifications (confirmation, cancellation, reminder)",
+        "Tenant operational dashboard",
+        "Platform operator DLQ console",
+        "Basic Grafana observability"
       ],
-      "excludes": [
-        "What is explicitly deferred from this phase"
-      ]
+      "excludes": ["SMS notifications", "Analytics alerts", "Enterprise plan", "Data export"]
     },
     {
       "phase": "v1.0",
       "status": "Planned",
-      "goal": "What does v1.0 deliver beyond MVP?",
+      "goal": "Production-ready platform with full observability and Pro plan.",
       "features": [
-        "Feature 1",
-        "Feature 2"
+        "Pro plan with SMS notifications",
+        "Stream processing anomaly alerts (velocity spike, cancellation rate)",
+        "Analytics daily summaries",
+        "Full Grafana LGTM stack with SLO dashboards",
+        "Tenant event replay",
+        "Data export and GDPR erasure",
+        "Enterprise plan (dedicated DB, custom domain, SLA)",
+        "Peak hour detection and recommendations"
       ]
     },
     {
       "phase": "v1.5",
       "status": "Planned",
-      "goal": "Future enhancements.",
+      "goal": "Platform scalability improvements and channel expansion.",
       "features": [
-        "Feature 1"
+        "WhatsApp notification channel",
+        "Google Calendar / Outlook sync",
+        "Waitlist management",
+        "Group appointment bookings",
+        "Recurring appointment support",
+        "Custom branding per tenant (booking page white-label)"
+      ]
+    },
+    {
+      "phase": "v2.0",
+      "status": "Roadmap",
+      "goal": "Platform intelligence and integration ecosystem.",
+      "features": [
+        "AI-driven scheduling suggestions (smart slot recommendations)",
+        "CRM integration (Salesforce, HubSpot)",
+        "Video conferencing integration (Zoom, Google Meet)",
+        "Multi-language support",
+        "Native iOS and Android apps",
+        "Advanced reporting and revenue analytics"
+      ]
+    },
+    {
+      "phase": "Marketplace",
+      "status": "Vision",
+      "goal": "Open platform where customers discover and book businesses.",
+      "features": [
+        "Public tenant directory by category and location",
+        "Customer accounts spanning multiple tenants",
+        "Review and rating system",
+        "Staff marketplace (independent contractors listing availability)"
+      ]
+    },
+    {
+      "phase": "Platform Expansion",
+      "status": "Vision",
+      "goal": "Vertical expansion beyond appointment booking.",
+      "features": [
+        "POS integration (payments at point of service)",
+        "Inventory management (consumables per service)",
+        "Staff payroll integration",
+        "Loyalty programme",
+        "Franchise management (parent tenant → child tenants)"
       ]
     }
   ]

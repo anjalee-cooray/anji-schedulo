@@ -1,36 +1,63 @@
 {
-  "_fill": "YOU fill this. Your product vision, who it is for, how it makes money, and what is out of scope for v1.",
   "product": {
-    "vision": "One sentence: what world does this product create for its users?",
-    "problemStatement": "What pain does this product solve and for whom? Why do existing solutions fall short?",
+    "vision": "Make professional appointment scheduling accessible to every business — from a solo therapist to a multi-location clinic — without requiring technical expertise or per-tenant infrastructure.",
+    "problemStatement": "Small and mid-sized service businesses lose revenue and customers to double-bookings, missed reminders, and manual scheduling. Existing tools are either too simple (no automation) or too expensive and complex (enterprise-only). AnjiSchedulo delivers enterprise-grade scheduling as a self-serve SaaS at accessible price points.",
     "targetMarket": [
-      "Industry or segment 1",
-      "Industry or segment 2"
+      "Salon & Beauty",
+      "Clinic & Healthcare",
+      "Fitness & Wellness",
+      "Consultancy & Coaching",
+      "Legal & Financial Services",
+      "Automotive Services"
     ],
     "businessModel": [
-      "e.g. B2B | B2C | B2B2C | SaaS | PaaS"
+      "B2B",
+      "SaaS"
     ],
     "pricing": [
       {
         "tier": "Starter",
-        "target": "Who is this tier for?",
+        "target": "Solo operators and micro-businesses",
         "limits": {
-          "exampleLimit": "value"
+          "staff": 3,
+          "bookingsPerMonth": 200,
+          "services": 5,
+          "notificationChannels": ["email"]
         },
-        "infrastructure": "shared | dedicated"
+        "infrastructure": "shared"
       },
       {
         "tier": "Pro",
-        "target": "Who is this tier for?",
+        "target": "Growing SMBs with multiple staff",
         "limits": {
-          "exampleLimit": "value"
+          "staff": 20,
+          "bookingsPerMonth": 2000,
+          "services": "unlimited",
+          "notificationChannels": ["email", "sms"]
         },
-        "infrastructure": "shared | dedicated"
+        "infrastructure": "shared"
+      },
+      {
+        "tier": "Enterprise",
+        "target": "Multi-location businesses requiring SLA, custom domain, dedicated infra",
+        "limits": {
+          "staff": "unlimited",
+          "bookingsPerMonth": "unlimited",
+          "services": "unlimited",
+          "notificationChannels": ["email", "sms", "whatsapp"]
+        },
+        "infrastructure": "dedicated",
+        "extras": ["dedicated database cluster", "custom domain", "SLA", "SSO", "data residency"]
       }
     ],
     "outOfScopeV1": [
-      "Feature or capability intentionally excluded from version 1",
-      "Add more as needed"
+      "Video conferencing integration",
+      "Multi-language / internationalisation",
+      "Native mobile applications",
+      "Marketplace / staff-to-tenant matching",
+      "AI-driven scheduling suggestions",
+      "POS / inventory management",
+      "CRM"
     ]
   }
 }

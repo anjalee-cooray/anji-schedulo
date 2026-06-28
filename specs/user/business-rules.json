@@ -1,20 +1,111 @@
 {
-  "_fill": "YOU fill this. Non-negotiable rules the system must always enforce — not features, but invariants. Include why the rule exists.",
   "businessRules": [
     {
       "id": "BR001",
-      "category": "e.g. Booking | Payments | Access Control | Data Retention",
-      "rule": "State the rule clearly and unambiguously.",
-      "rationale": "Why does this rule exist? What bad outcome does it prevent?",
-      "enforcement": "How is this rule enforced technically? (e.g. DB constraint, service-layer validation, policy check)",
-      "exceptions": ["Any legitimate exceptions to this rule — or omit this field if none"]
+      "category": "Booking",
+      "rule": "A slot cannot be booked by more than one customer simultaneously.",
+      "rationale": "Prevents double-booking regardless of concurrent requests.",
+      "enforcement": "Unique database constraint on (tenant_id, staff_id, slot_date, slot_start) in slot_locks table.",
+      "relatedPattern": "Idempotent Consumer, Inbox Pattern"
     },
     {
       "id": "BR002",
-      "category": "Category",
-      "rule": "Second business rule.",
-      "rationale": "Why it exists.",
-      "enforcement": "How it is enforced."
+      "category": "Cancellation",
+      "rule": "A customer may only cancel an appointment up to the number of hours defined in the tenant's cancellation policy before the appointment start time.",
+      "rationale": "Protects tenant revenue from last-minute cancellations.",
+      "enforcement": "Validated in BookingCommandService before writing appointment.cancelled event.",
+      "configuredPer": "tenant_config.cancellation_hours"
+    },
+    {
+      "id": "BR003",
+      "category": "Availability",
+      "rule": "Staff cannot be booked outside their configured working hours.",
+      "rationale": "Ensures staff availability respects business operating constraints.",
+      "enforcement": "Availability Service computes open slots only within tenant_working_hours.",
+      "exceptions": ["Admin can override with a manual slot creation in future versions"]
+    },
+    {
+      "id": "BR004",
+      "category": "Booking",
+      "rule": "A booking saga must be atomic — either all steps succeed (slot reserved + payment charged + event confirmed) or all compensations are applied (slot released and/or charge reversed).",
+      "rationale": "Prevents partial bookings where a slot is held but no appointment exists, or payment is charged without confirmation.",
+      "enforcement": "Booking Orchestrator compensates synchronously on any step failure.",
+      "relatedPattern": "Saga Orchestration"
+    },
+    {
+      "id": "BR005",
+      "category": "Tenant Isolation",
+      "rule": "A tenant's data must never be readable by another tenant under any condition, including infrastructure failure or application bug.",
+      "rationale": "Core multi-tenancy guarantee.",
+      "enforcement": "PostgreSQL Row-Level Security enforced at DB layer; tenant_id on every table; RLS safe-by-default (null context = zero rows).",
+      "relatedPattern": "Pool with RLS"
+    },
+    {
+      "id": "BR006",
+      "category": "Booking",
+      "rule": "Duplicate booking requests carrying the same idempotency key must produce exactly one confirmed appointment.",
+      "rationale": "Network retries must not result in double-charges or duplicate appointments.",
+      "enforcement": "booking_idempotency table with unique constraint on idempotency_key.",
+      "relatedPattern": "Idempotent Consumer"
+    },
+    {
+      "id": "BR007",
+      "category": "Notifications",
+      "rule": "A notification delivery failure must never block, delay, or roll back the booking operation that triggered it.",
+      "rationale": "Core booking availability must not depend on third-party email/SMS providers.",
+      "enforcement": "Notification Service is a fully decoupled async subscriber. Retries are isolated to the notification pipeline."
+    },
+    {
+      "id": "BR008",
+      "category": "Booking",
+      "rule": "A customer may not have more active bookings than the tenant's configured max_advance_bookings limit.",
+      "rationale": "Prevents a single customer from monopolising availability.",
+      "enforcement": "Validated in BookingCommandService before initiating saga.",
+      "configuredPer": "tenant_config.max_advance_bookings"
+    },
+    {
+      "id": "BR009",
+      "category": "Cancellation",
+      "rule": "When a cancellation triggers a refund, the refund failure must not prevent slot release or customer notification.",
+      "rationale": "Slot must be freed immediately. Refund failure is handled separately via DLQ and manual ops.",
+      "enforcement": "Cancellation Saga choreography — each step is independent with its own failure path.",
+      "relatedPattern": "Saga Choreography"
+    },
+    {
+      "id": "BR010",
+      "category": "Booking",
+      "rule": "Appointments may only be booked within the tenant's configured booking window.",
+      "rationale": "Prevents bookings too far in advance that may overwhelm the calendar.",
+      "enforcement": "Availability Service excludes slots beyond tenant_config.booking_window_days.",
+      "configuredPer": "tenant_config.booking_window_days"
+    },
+    {
+      "id": "BR011",
+      "category": "Tenant Lifecycle",
+      "rule": "A suspended tenant's data must remain read-accessible to the tenant admin for 30 days before deprovisioning.",
+      "rationale": "Allows data export before permanent loss of access.",
+      "enforcement": "Status machine — suspended state permits read-only access. Deprovisioning requires explicit operator action after 30 days."
+    },
+    {
+      "id": "BR012",
+      "category": "Data Retention",
+      "rule": "All tenant data must be retained for a minimum of 90 days after deprovisioning before hard deletion.",
+      "rationale": "Legal and dispute resolution requirements.",
+      "exceptions": ["Payment records: 7-year minimum", "Audit log: permanent"]
+    },
+    {
+      "id": "BR013",
+      "category": "Events",
+      "rule": "Every event must carry a tenant_id, event_id, correlation_id, and occurred_at in its envelope.",
+      "rationale": "Enables tenant isolation, deduplication, and distributed tracing across all consumers.",
+      "enforcement": "EventEnvelope validator in all consumers — routes to DLQ if envelope is invalid."
+    },
+    {
+      "id": "BR014",
+      "category": "Audit",
+      "rule": "All write operations that modify tenant-scoped data must produce an immutable audit log entry.",
+      "rationale": "GDPR and compliance requirement. Enables incident forensics.",
+      "enforcement": "audit_log table with INSERT-only privileges for booking_app_user."
     }
   ]
 }

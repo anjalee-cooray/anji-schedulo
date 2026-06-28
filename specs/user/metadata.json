@@ -1,24 +1,23 @@
 {
-  "_fill": "YOU fill this. Basic project identity — name, owner, status.",
   "metadata": {
-    "name": "Your Project Name",
-    "version": "0.1.0",
-    "owner": "Your Company / Team Name",
-    "status": "Design | Development | Production",
-    "lastUpdated": "YYYY-MM-DD",
+    "name": "AnjiSchedulo",
+    "version": "1.0.0",
+    "owner": "Pubudu Anjalee Cooray",
+    "status": "Design",
+    "lastUpdated": "2026-06-27",
     "specVersion": "v1",
-    "repository": "https://github.com/your-org/your-repo",
+    "repository": "https://github.com/anjalee-cooray/anji-schedulo",
     "authors": [
       {
-        "name": "Author Name",
+        "name": "Pubudu Anjalee Cooray",
         "role": "Product & Architecture"
       }
     ],
     "changelog": [
       {
-        "version": "0.1.0",
-        "date": "YYYY-MM-DD",
-        "summary": "Initial specification"
+        "version": "1.0.0",
+        "date": "2026-06-27",
+        "summary": "Initial specification — all 18 layers defined"
       }
     ]
   }

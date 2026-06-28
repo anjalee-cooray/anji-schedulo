@@ -1,9 +1,141 @@
 {
   "_ai": "AI fills this. Derived from: non-functional-requirements.json + functional-requirements.json + business-rules.json. Do not edit manually.",
   "architecture": {
-    "style": "",
-    "corePatterns": [],
-    "services": [],
-    "adrs": []
+    "style": "Event-Driven Microservices with CQRS, Event Sourcing, and Saga Orchestration/Choreography",
+    "hybridApproach": "The system blends synchronous and asynchronous patterns at a well-defined seam. The booking saga (UJ002) uses synchronous orchestration — booking-command-service calls availability-service and payment-service in sequence and compensates inline on failure (BR004). This delivers the strong consistency and sub-3-second latency required for FR004 and NFR004. All downstream side effects — dashboard updates, notifications, analytics, billing events — are fully asynchronous via SNS/SQS pub/sub. This split ensures that notification outages, analytics processing delays, or dashboard lag never affect booking availability or correctness (BR007, NFR002). The cancellation flow (UJ003) uses saga choreography: each step (refund, slot release, notifications) is an independent subscriber, allowing refund failures to be handled in isolation via DLQ without blocking slot release (BR009).",
+    "corePatterns": [
+      {
+        "pattern": "Transactional Outbox",
+        "usedFor": "booking-command-service, tenant-service, payment-service. Every domain event is written to an outbox_records table in the same DB transaction as the state change. outbox-relay polls and publishes to SNS. Eliminates dual-write risk between PostgreSQL and the message bus. Satisfies NFR003 (no event lost between write and consumption)."
+      },
+      {
+        "pattern": "Saga Orchestration",
+        "usedFor": "booking-command-service (UJ002, UJ004). Coordinates the booking sequence: reserve-slot → capture-payment → write-appointment.confirmed. Each step is synchronous. On any failure, the orchestrator applies compensation: release-slot and/or void-payment. Satisfies BR004 (atomic booking) and FR004 (clear 409/402 error responses)."
+      },
+      {
+        "pattern": "Saga Choreography",
+        "usedFor": "Cancellation flow (UJ003). appointment.cancelled event triggers independent subscribers: payment-service (refund), availability-service (slot release), notification-service (customer and staff notifications). Each step has its own DLQ path. Refund failure routes to DLQ without blocking slot release (BR009)."
+      },
+      {
+        "pattern": "CQRS",
+        "usedFor": "dashboard-service (FR008, UJ005). Read and write models are fully separated. Write side: AppointmentEvent table in booking-command-service. Read side: TenantDashboardView in dashboard-service, updated incrementally from events. Enables < 200ms dashboard reads (NFR006) without impacting write throughput."
+      },
+      {
+        "pattern": "Event Sourcing",
+        "usedFor": "Appointment aggregate in booking-command-service. Current appointment state is derived by replaying AppointmentEvent records in occurred_at order. No mutable status column. Enables full event replay for view rebuilding (FR011) and provides an immutable audit trail of every appointment lifecycle transition (BR014)."
+      },
+      {
+        "pattern": "Event-Carried State Transfer",
+        "usedFor": "All published events (appointment.*, tenant.*, payment.*). Event payloads include a full snapshot of the entity at event time. Downstream consumers (notification-service, dashboard-service) never need to call back to the originating service to render a notification or update a view. Reduces coupling and eliminates the risk of stale reads across service boundaries."
+      },
+      {
+        "pattern": "Idempotent Consumer",
+        "usedFor": "All SQS consumers (notification-service, dashboard-service, analytics-service, payment-service, ops-service). Each consumer maintains an inbox_records table. Before processing, the consumer inserts (event_id, consumer_name). Duplicate constraint violation = already processed, skip. Satisfies NFR009 (identical state from replay) and enables safe at-least-once delivery from SQS."
+      },
+      {
+        "pattern": "Inbox Pattern",
+        "usedFor": "booking-command-service (tenant.configured events), payment-service (appointment.cancelled), availability-service (all invalidation events). Deduplication table prevents idempotency-key collision under at-least-once delivery."
+      },
+      {
+        "pattern": "Dead Letter Queue",
+        "usedFor": "Every SQS consumer queue has a paired DLQ. After 4 processing attempts, unprocessable messages route to the DLQ. ops-service monitors all DLQs and surfaces them for triage (FR010, NFR016). Ensures failures are visible, recoverable, and do not block the primary queue."
+      },
+      {
+        "pattern": "Materialised View",
+        "usedFor": "dashboard-service. TenantDashboardView is updated incrementally per event. Served directly from a single indexed row lookup. O(1) read regardless of booking history depth. Satisfies NFR006 (< 200ms p95) and NFR008 (< 5-second lag)."
+      },
+      {
+        "pattern": "Pool with Row-Level Security",
+        "usedFor": "All PostgreSQL tables across all services. All tenants share a single database cluster (Starter/Pro). Every table has a tenant_id column. PostgreSQL RLS policies restrict all SELECT/INSERT/UPDATE/DELETE to the current tenant context, set via SET LOCAL app.tenant_id. Safe default: missing tenant context returns zero rows, never all rows (BR005, NFR012)."
+      },
+      {
+        "pattern": "Circuit Breaker",
+        "usedFor": "booking-command-service → payment-service (synchronous call during booking saga). Prevents the booking saga from hanging indefinitely on a Stripe or payment-service outage. Opens after 5 consecutive failures; half-open probe after 30 seconds. On open circuit, saga returns 503 with no charge and no slot hold (NFR002)."
+      }
+    ],
+    "services": [
+      {
+        "name": "api-gateway",
+        "responsibility": "The single entry point for all client traffic. Validates JWT tokens (RS256), extracts tenant_id and role claims, injects correlation_id into every downstream request header, enforces per-tenant rate limits, and routes requests to the appropriate service. Does not contain business logic. Ensures tenant context is always present before a request reaches a domain service."
+      },
+      {
+        "name": "tenant-service",
+        "responsibility": "Owns all Tenant aggregate operations: registration, configuration updates, staff and service management, suspension, and deprovisioning. Enforces tier-based limits (staff count, service count) from product.json. Produces tenant.* events via Transactional Outbox. The authoritative source for TenantConfig consumed by booking-command-service and availability-service."
+      },
+      {
+        "name": "booking-command-service",
+        "responsibility": "Owns the Appointment aggregate and all write operations against it. Orchestrates the booking saga (slot-lock → payment → confirmation), enforces idempotency via BookingIdempotencyKey, validates booking rules against TenantConfig (BR002, BR008, BR010), and persists the immutable AppointmentEvent stream. The write-side source of truth for all appointment state."
+      },
+      {
+        "name": "availability-service",
+        "responsibility": "Derives and serves open booking slots for a given staff member, date, and service. Joins WorkingHours with StaffBlocks and existing SlotLocks from booking-command-service's data. Caches results in Redis (TTL 30 seconds). Cache is invalidated on appointment.confirmed and appointment.cancelled events. Called synchronously during the booking saga slot-check step and by customers browsing slots (FR003, NFR005)."
+      },
+      {
+        "name": "payment-service",
+        "responsibility": "Owns all Stripe integrations: PaymentIntent creation and capture (synchronous, called by the booking saga), and refund initiation (async, triggered by appointment.cancelled). Maintains the Payment record and its lifecycle. Applies a Circuit Breaker on Stripe API calls. Routes refund_failed events to DLQ for manual ops resolution without blocking the cancellation flow (BR009)."
+      },
+      {
+        "name": "notification-service",
+        "responsibility": "Delivers lifecycle notifications to customers and staff across email (SendGrid), SMS (Twilio), and WhatsApp (Twilio — Enterprise only). Subscribes to appointment.* and tenant.provisioned events. All notification content is derived from the event payload snapshot — no back-calls to other services. Retries failed deliveries up to 4 times with exponential backoff. Routes to DLQ after retry exhaustion (FR007, BR007)."
+      },
+      {
+        "name": "dashboard-service",
+        "responsibility": "Maintains the TenantDashboardView materialised read model by consuming AppointmentEvents and incrementally updating per-tenant per-day aggregates. Serves dashboard API responses directly from the pre-aggregated view in < 200ms. Supports full view rebuild from event replay triggered by ops-service (FR008, UJ005, NFR006)."
+      },
+      {
+        "name": "analytics-service",
+        "responsibility": "Processes the real-time booking event stream via Kinesis to detect anomalies: booking velocity spikes (> 3x historical in 5-minute window) and elevated cancellation rates (> 30% over last 50 bookings). Publishes analytics.velocity_spike_detected and analytics.cancellation_rate_alert events. Alerts surfaced to tenant admins and the Platform Operator within 60 seconds (FR009). In scope from v1.0."
+      },
+      {
+        "name": "ops-service",
+        "responsibility": "The Platform Operator's (P4) operational toolplane. Provides: DLQ inspection and re-queue (FR010), tenant event replay (FR011), tenant data export with signed S3 URLs (FR012), and deprovisioning orchestration (FR013). Cross-tenant read access gated on platform_operator role. All ops actions written to AuditLog. Replay events tagged with replay_job_id so consumers can log and trace them distinctly from live traffic."
+      },
+      {
+        "name": "outbox-relay",
+        "responsibility": "Polls outbox_records tables across all domain services every 500 milliseconds. For each unpublished record, publishes the event payload to the corresponding SNS topic and marks the record as published. The sole bridge between PostgreSQL durability and the SNS/SQS message bus. Independently scalable and observable. Does not contain business logic."
+      }
+    ],
+    "adrs": [
+      {
+        "id": "ADR001",
+        "title": "Strong consistency at the slot level; eventual consistency for all derived views",
+        "status": "accepted",
+        "context": "The system must prevent double-booking under concurrent requests (BR001, NFR007) while serving dashboard reads at < 200ms (NFR006) and allowing notification delivery failures to be fully decoupled from booking operations (BR007). A single consistency model cannot satisfy all three constraints simultaneously.",
+        "decision": "Slot locks use a unique partial index in PostgreSQL — the only synchronous consistency boundary in the system. All other state (TenantDashboardView, AnalyticsSummary, NotificationRecord) is eventually consistent, updated via async event subscribers. The target lag for derived views is < 5 seconds under normal load (NFR008). This means the dashboard may transiently show stale data, but the slot-booking invariant is always strongly consistent.",
+        "consequences": "Positive: booking throughput is not limited by view-update latency; notification failures cannot block bookings; the system degrades gracefully under load. Negative: tenant admins may see a 1–5 second lag on the dashboard during peak load; compensating UX messaging is needed. Mitigation: < 5-second SLO on dashboard lag, monitored via SLI004."
+      },
+      {
+        "id": "ADR002",
+        "title": "Pool multi-tenancy with PostgreSQL Row-Level Security over schema-per-tenant",
+        "status": "accepted",
+        "context": "The product targets SMBs at accessible price points (Starter tier), meaning the platform must efficiently serve hundreds to thousands of tenants on shared infrastructure. Schema-per-tenant would require a new schema (or database) per tenant, making provisioning complex and connection pooling expensive at scale. Silo (database-per-tenant) is cost-prohibitive at the Starter and Pro tiers.",
+        "decision": "All tenants share a single PostgreSQL cluster (Starter and Pro). Every table carries a tenant_id column. PostgreSQL RLS policies enforce tenant isolation at the database layer — queries return only rows belonging to the current tenant context, set via SET LOCAL app.tenant_id at the start of every transaction. The safe default is enforced in policy: a missing or null tenant_id context returns zero rows, never all rows. Enterprise tenants receive a dedicated database cluster.",
+        "consequences": "Positive: simple provisioning (no schema migration per tenant), efficient connection pooling via PgBouncer, straightforward schema migrations. Negative: a misconfigured RLS policy could expose data across tenants — this risk is mitigated by CI cross-tenant isolation tests (NFR012) and the five-minute isolation monitor in production. Noisy-neighbour risk on shared cluster mitigated by per-tenant query quotas and autovacuum tuning."
+      },
+      {
+        "id": "ADR003",
+        "title": "AWS SNS fan-out to SQS FIFO queues as the message bus",
+        "status": "accepted",
+        "context": "The system publishes appointment and tenant lifecycle events to multiple independent consumers (notification-service, dashboard-service, analytics-service, ops-service). Each consumer must receive every event exactly once in order (per tenant), with durable delivery and a clear dead-letter path. Self-managed brokers (Kafka, RabbitMQ) add operational overhead not justified at this stage.",
+        "decision": "One SNS topic per event type (e.g. appointment-confirmed-topic). Each consumer service subscribes via its own SQS FIFO queue (e.g. notification-service-appointment-confirmed-queue). Message ordering is guaranteed within a MessageGroupId set to tenant_id — ensuring per-tenant ordering without global FIFO throughput limits. Each SQS queue has a paired DLQ with a maxReceiveCount of 4. SQS retains messages for 14 days (NFR003). All queues and topics are encrypted with KMS (NFR013).",
+        "consequences": "Positive: fully managed, no broker ops, per-tenant ordering, native DLQ support, 14-day message retention for recovery, easy addition of new consumers without touching producers (NFR015). Negative: SQS FIFO throughput is limited to 300 transactions/second per queue per MessageGroupId by default — sufficient for v1 but will require throughput quotas or Kinesis migration at very high tenant volumes. SQS does not support replay by offset — historical replay is handled by the ops-service re-publishing from the PostgreSQL event store."
+      },
+      {
+        "id": "ADR004",
+        "title": "Saga Orchestration for booking; Saga Choreography for cancellation",
+        "status": "accepted",
+        "context": "The booking flow requires atomic success or failure across three steps (slot lock, payment, confirmation) with immediate compensating actions if any step fails (BR004). The cancellation flow has independent side effects (refund, slot release, notifications) where each step may fail independently and each failure has a different resolution path (BR009). A single pattern does not fit both flows optimally.",
+        "decision": "Booking uses Saga Orchestration: booking-command-service is the orchestrator and calls availability-service and payment-service synchronously. It applies compensation synchronously on failure and returns a clear result to the client within the same HTTP request. Cancellation uses Saga Choreography: booking-command-service publishes appointment.cancelled; payment-service, availability-service, and notification-service are independent subscribers that each process their own step and handle their own failures. Refund failure routes to DLQ without blocking slot release.",
+        "consequences": "Positive: booking gives clients a deterministic synchronous response (UX requirement); cancellation is resilient because individual step failures are isolated. Negative: booking orchestrator is a coordination point — if it fails mid-saga, compensation relies on the outbox relay eventually publishing the compensating event. Mitigation: outbox ensures at-least-once delivery of compensation events. Monitoring: saga timeout alert if booking-command-service does not produce appointment.confirmed or appointment.failed within 10 seconds."
+      },
+      {
+        "id": "ADR005",
+        "title": "PostgreSQL as the appointment event store over a dedicated event store",
+        "status": "accepted",
+        "context": "Event Sourcing requires an append-only event log for the Appointment aggregate. Dedicated event store databases (EventStoreDB, Axon Server) provide rich stream subscription and projection capabilities but introduce an additional stateful infrastructure component to operate. At the scale and team size of AnjiSchedulo v1, operational simplicity is a priority.",
+        "decision": "The appointment_events table in PostgreSQL serves as the event store. It is INSERT-only (no UPDATE or DELETE). A composite index on (tenant_id, appointment_id, occurred_at) enables efficient event stream replay per appointment. The table is included in RDS automated backups and exported to S3 monthly. The ops-service queries this table directly for tenant event replay (FR011). If event volume grows beyond PostgreSQL's comfortable range, migration to a dedicated event store is the identified upgrade path.",
+        "consequences": "Positive: no new infrastructure component; event data co-located with transactional data enabling same-transaction outbox writes; familiar operational tooling. Negative: lacks native stream subscription and projection features of dedicated event stores; projection rebuilds are heavier (full table scan per replay). Mitigation: replay is an operator action, not a hot path — occasional full-scan cost is acceptable. Index on occurred_at allows date-range scoped replay."
+      }
+    ]
   }
 }

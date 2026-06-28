@@ -1,25 +1,107 @@
 {
-  "_fill": "YOU fill this. Define your quality targets — performance, availability, consistency, scalability. These drive architecture decisions.",
   "nonFunctionalRequirements": [
     {
       "id": "NFR001",
-      "category": "Availability | Performance | Consistency | Security | Scalability | Compliance",
-      "requirement": "State the requirement as a measurable target.",
-      "measurement": "How will you measure this in production? (e.g. p95 latency via Prometheus histogram)",
-      "relatedSLO": "SLO001"
-    },
-    {
-      "id": "NFR002",
-      "category": "Performance",
-      "requirement": "The core user action must complete in under X seconds at p95.",
-      "measurement": "Histogram metric on the critical path service.",
+      "category": "Availability",
+      "requirement": "Core booking operations (create, confirm, cancel) target 99.9% monthly availability.",
+      "measurement": "Uptime monitoring via Grafana SLO dashboard",
       "relatedSLO": "SLO002"
     },
     {
+      "id": "NFR002",
+      "category": "Availability",
+      "requirement": "Failure of any non-core service (notifications, analytics, reporting) must not degrade booking availability.",
+      "enforcement": "Notification and Analytics services are fully decoupled async subscribers. Circuit breakers on synchronous calls to Availability and Payment."
+    },
+    {
       "id": "NFR003",
+      "category": "Availability",
+      "requirement": "No event is lost between the time it is written and the time it is consumed, even if a consumer is temporarily unavailable.",
+      "enforcement": "Transactional Outbox — events durable in PostgreSQL until Relay publishes. SQS retains messages for up to 14 days."
+    },
+    {
+      "id": "NFR004",
+      "category": "Performance",
+      "requirement": "Booking confirmation end-to-end latency p95 < 3 seconds.",
+      "measurement": "bookings_saga_duration_seconds histogram p95",
+      "relatedSLO": "SLO001"
+    },
+    {
+      "id": "NFR005",
+      "category": "Performance",
+      "requirement": "Slot availability query p95 < 500ms.",
+      "measurement": "http_server_requests_seconds histogram p95 for /availability",
+      "relatedSLO": "SLO003"
+    },
+    {
+      "id": "NFR006",
+      "category": "Performance",
+      "requirement": "Dashboard view response p95 < 200ms.",
+      "enforcement": "Served from pre-aggregated Materialized View — O(1) regardless of booking history depth.",
+      "relatedSLO": "SLO004"
+    },
+    {
+      "id": "NFR007",
       "category": "Consistency",
-      "requirement": "Describe your consistency requirement — e.g. no duplicate processing, no data loss between write and consume.",
-      "enforcement": "How will this be enforced technically?"
+      "requirement": "A slot can never be double-booked, regardless of concurrent requests.",
+      "enforcement": "Unique constraint on slot_locks (tenant_id, staff_id, slot_date, slot_start) WHERE released_at IS NULL.",
+      "relatedBusinessRule": "BR001"
+    },
+    {
+      "id": "NFR008",
+      "category": "Consistency",
+      "requirement": "All derived views are eventually consistent with the event log, with target lag < 5 seconds under normal load.",
+      "relatedSLO": "SLO004"
+    },
+    {
+      "id": "NFR009",
+      "category": "Consistency",
+      "requirement": "Replaying events for a tenant produces identical derived state to live processing.",
+      "enforcement": "Idempotent consumers via event_id watermarks and inbox deduplication."
+    },
+    {
+      "id": "NFR010",
+      "category": "Scalability",
+      "requirement": "The platform supports horizontal growth in tenant count without architectural changes.",
+      "enforcement": "Pool tenancy model; event bus partitioned by tenant_id; stateless services scale horizontally."
+    },
+    {
+      "id": "NFR011",
+      "category": "Scalability",
+      "requirement": "A single high-volume tenant cannot degrade performance for other tenants.",
+      "enforcement": "SQS FIFO per-tenant MessageGroupId; dedicated partitions for high-volume tenants; per-tenant throughput quotas."
+    },
+    {
+      "id": "NFR012",
+      "category": "Security",
+      "requirement": "Tenant data isolation violations must be zero.",
+      "enforcement": "RLS at DB layer, tenant_id namespacing at cache layer, envelope validation at event bus layer.",
+      "measurement": "Isolation monitor runs every 5 minutes in production"
+    },
+    {
+      "id": "NFR013",
+      "category": "Security",
+      "requirement": "All data in transit and at rest is encrypted.",
+      "enforcement": "TLS 1.3 in transit; AES-256 at rest (RDS, S3, SQS, ElastiCache)."
+    },
+    {
+      "id": "NFR014",
+      "category": "Observability",
+      "requirement": "Every event carries a correlation_id traceable across all services.",
+      "enforcement": "API Gateway generates correlation_id; all services propagate via HTTP headers, MDC, and event envelopes."
+    },
+    {
+      "id": "NFR015",
+      "category": "Extensibility",
+      "requirement": "A new downstream consumer of booking events can be added without modifying the booking service.",
+      "enforcement": "Pub/Sub via SNS — new SQS subscriber added without touching the producer."
+    },
+    {
+      "id": "NFR016",
+      "category": "Recoverability",
+      "requirement": "DLQ entries must be resolved within 4 hours.",
+      "measurement": "dlq.depth > 0 alert triggers within 5 minutes; resolution tracked in ops console.",
+      "relatedAlert": "ALT003"
     }
   ]
 }

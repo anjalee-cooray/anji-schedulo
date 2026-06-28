@@ -1,10 +1,184 @@
 {
   "_ai": "AI fills this. Derived from: personas.json + functional-requirements.json + non-functional-requirements.json + business-rules.json. Do not edit manually.",
   "security": {
-    "authentication": {},
-    "authorisation": {},
-    "tenantIsolation": {},
-    "dataProtection": {},
-    "secretsManagement": {}
+    "authentication": {
+      "mechanism": "JWT (JSON Web Tokens) signed with RS256 (RSA-SHA256). Asymmetric signing: private key held by api-gateway for token issuance; public key distributed to all services for validation.",
+      "tokenClaims": {
+        "required": [
+          "sub (string — user_id UUID; customer_id, staff_id, or operator_id depending on role)",
+          "tid (string — tenant_id UUID; claims the tenant this token is scoped to; absent for platform_operator tokens)",
+          "role (string enum: tenant_admin | staff | customer | platform_operator)",
+          "iat (integer — issued-at Unix timestamp)",
+          "exp (integer — expiry Unix timestamp)",
+          "jti (string UUID — JWT ID for token revocation and audit log correlation)"
+        ],
+        "optional": [
+          "email (string — used for notification routing; omitted for privacy on anonymous booking tokens)",
+          "name (string — display name)",
+          "plan (string enum: starter | pro | enterprise — tenant pricing tier, derived from Tenant.plan at login time)",
+          "sso_provider (string — identity provider identifier for Enterprise SSO tokens, e.g. 'okta', 'azure-ad')"
+        ]
+      },
+      "expiry": {
+        "accessToken": "15 minutes. Short lifetime limits exposure of a stolen token. Enforced for all roles.",
+        "refreshToken": "7 days. Stored in HttpOnly Secure SameSite=Strict cookie; never exposed to JavaScript. Refresh endpoint issues a new access token and rotates the refresh token."
+      },
+      "publicEndpoints": [
+        "POST /auth/register — tenant registration (FR001)",
+        "POST /auth/token — exchange credentials for access + refresh tokens",
+        "POST /auth/refresh — rotate refresh token and issue new access token",
+        "GET /health — service health check (no auth required)",
+        "GET /tenants/{tenantSlug}/availability — slot browsing by unauthenticated customers (FR003)",
+        "POST /tenants/{tenantSlug}/bookings — customer booking with idempotency key (FR004); no account required, customer identified by email in request body"
+      ],
+      "enterpriseSso": {
+        "supported": true,
+        "description": "Enterprise plan tenants may configure SAML 2.0 or OIDC federated identity (e.g. Okta, Azure AD). The api-gateway normalises the incoming IdP assertion into a standard AnjiSchedulo JWT with the same claims structure as native tokens. The tid claim is always set to the Enterprise tenant's tenant_id from the SSO configuration — an IdP cannot issue a token for a different tenant."
+      }
+    },
+    "authorisation": {
+      "model": "RBAC (Role-Based Access Control). Roles are coarse-grained (four roles). Within a role, actions are further gated by tenant scope (all non-operator users are confined to their own tenant_id).",
+      "enforcementLayer": "Three-layer enforcement: (1) api-gateway validates JWT signature and checks that the role claim permits the requested HTTP method + route; (2) service layer checks that the requested entity belongs to the token's tid claim; (3) PostgreSQL RLS enforces tenant_id isolation as a safety net regardless of application code (NFR012, BR005).",
+      "roles": [
+        {
+          "role": "tenant_admin",
+          "persona": "P1",
+          "scope": "Own tenant only (tid claim enforced at all three layers)",
+          "permissions": [
+            "Create, read, update, deactivate Services",
+            "Create, read, update, deactivate StaffMembers",
+            "Read, update TenantConfig (cancellation_hours, booking_window_days, max_advance_bookings)",
+            "Read all Appointments for own tenant",
+            "Read TenantDashboardView",
+            "Request tenant data export (FR012)",
+            "Read AuditLog for own tenant",
+            "Cancel any Appointment for own tenant (override customer cancellation window)"
+          ]
+        },
+        {
+          "role": "staff",
+          "persona": "P2",
+          "scope": "Own tenant only; own staff record only for write operations",
+          "permissions": [
+            "Read own upcoming Appointments",
+            "Create, read, delete own StaffBlocks (availability blocking)",
+            "Read Services (read-only)",
+            "Receive booking and cancellation notifications (via notification-service, not API)"
+          ]
+        },
+        {
+          "role": "customer",
+          "persona": "P3",
+          "scope": "Own tenant only; own Customer record and own Appointments only",
+          "permissions": [
+            "Browse available slots (public, no token required for unauthenticated flow)",
+            "Create Appointment (via public booking endpoint with idempotency key)",
+            "Cancel own Appointment (within cancellation policy window — BR002)",
+            "Reschedule own Appointment (FR006)",
+            "Read own Appointment details and history"
+          ]
+        },
+        {
+          "role": "platform_operator",
+          "persona": "P4",
+          "scope": "Cross-tenant read; specific write actions on any tenant for operational purposes",
+          "permissions": [
+            "Read any Tenant record and its configuration",
+            "Read DLQ entries for any consumer queue (FR010)",
+            "Re-queue or discard DLQ events with audit log entry (FR010)",
+            "Initiate tenant event replay for any tenant (FR011)",
+            "Initiate tenant suspension and deprovisioning (FR013)",
+            "Read ReplayJob status",
+            "Generate tenant data export (FR012)",
+            "Read AuditLog across all tenants"
+          ]
+        }
+      ]
+    },
+    "tenantIsolation": {
+      "model": "Pool with Row-Level Security (PostgreSQL). All tenants on Starter and Pro share a single database cluster. Enterprise tenants have a dedicated cluster with the same RLS policies applied for defence in depth (ADR002).",
+      "layers": [
+        {
+          "layer": 1,
+          "name": "JWT tid claim",
+          "description": "api-gateway extracts tenant_id from the JWT tid claim and forwards it as the X-Tenant-Id header to all downstream services. The claim is set at token issuance from the authenticated Tenant.tenant_id and cannot be modified by the client."
+        },
+        {
+          "layer": 2,
+          "name": "Application-layer tenant filter",
+          "description": "Every service reads X-Tenant-Id from the request header and sets it in a request-scoped TenantContext object. All database queries, cache reads/writes, and event publishes include tenant_id as an explicit filter. Services never accept tenant_id from the request body — only from the validated JWT claim."
+        },
+        {
+          "layer": 3,
+          "name": "PostgreSQL Row-Level Security",
+          "description": "At the start of every database transaction, the service executes SET LOCAL app.tenant_id = '{tenant_id}'. RLS policies on every table restrict SELECT, INSERT, UPDATE, and DELETE to rows where tenant_id = current_setting('app.tenant_id'). This is a hard safety net: even if application code omits a tenant_id filter, zero rows are returned — never all rows."
+        },
+        {
+          "layer": 4,
+          "name": "Cache key namespacing",
+          "description": "All Redis cache keys include tenant_id as the first segment (e.g. availability:{tenant_id}:{staff_id}:{date}). Cache misses always go through the RLS-enforced database query, so a cache bypass never exposes cross-tenant data."
+        },
+        {
+          "layer": 5,
+          "name": "Event envelope validation",
+          "description": "All event consumers validate that the event envelope contains a non-null tenant_id matching the expected scope before processing. Events with missing or invalid tenant_id are routed to the DLQ (BR013)."
+        }
+      ],
+      "safeDefault": "A null or missing tenant context (e.g. app.tenant_id not set in the PostgreSQL session) triggers RLS policy evaluation to return zero rows. The RLS policy uses current_setting('app.tenant_id', true) with a fallback of '00000000-0000-0000-0000-000000000000' (a non-existent UUID), ensuring no real tenant data is ever returned on misconfiguration. This is tested in CI and verified by the production isolation monitor (NFR012).",
+      "testStrategy": "CI integration tests: (1) authenticated request with tenant_A JWT attempts to read tenant_B data — expects 404 or empty result, never tenant_B data; (2) database query with no tenant context set — expects zero rows returned by RLS; (3) event consumer with missing tenant_id in envelope — expects DLQ routing. Production: isolation monitor job runs every 5 minutes, attempts cross-tenant read at DB level and alerts if any rows are returned (NFR012)."
+    },
+    "dataProtection": {
+      "encryptionInTransit": {
+        "protocol": "TLS 1.3 enforced on all network paths",
+        "coverage": [
+          "Client → CloudFront (HTTPS enforced; HTTP to HTTPS redirect)",
+          "CloudFront → ALB → ECS services (HTTPS; ALB with ACM certificate)",
+          "ECS services → PostgreSQL RDS (ssl=require in connection string; TLSv1.2 minimum)",
+          "ECS services → ElastiCache Redis (in-transit encryption enabled)",
+          "ECS services → SNS / SQS (AWS SDK uses HTTPS by default; VPC endpoint enforced)",
+          "ECS services → AWS Secrets Manager (HTTPS via VPC endpoint)",
+          "ECS services → Stripe API (HTTPS; Stripe enforces TLS 1.2+)",
+          "ECS services → SendGrid / Twilio APIs (HTTPS)"
+        ]
+      },
+      "encryptionAtRest": {
+        "postgresql": "AES-256 via AWS KMS (aws/rds managed key for Starter/Pro; customer-managed KMS key for Enterprise tenants)",
+        "elasticache": "AES-256 encryption at rest enabled (ElastiCache parameter group encryption-at-rest=yes)",
+        "sns": "SSE-SQS (AES-256) or SSE-KMS on all topics",
+        "sqs": "SSE-KMS on all queues",
+        "s3": "SSE-KMS on all buckets (anji-schedulo-tenant-exports, anji-schedulo-event-archives, anji-schedulo-audit-logs)",
+        "secretsManager": "AWS KMS encryption on all secrets (default aws/secretsmanager key)"
+      },
+      "piiFields": [
+        "Customer.name",
+        "Customer.email",
+        "Customer.phone",
+        "StaffMember.name",
+        "StaffMember.email",
+        "Tenant.owner_email",
+        "NotificationRecord.recipient_contact",
+        "AppointmentEvent.payload (contains customer and staff snapshots)"
+      ],
+      "piiHandling": {
+        "storage": "PII stored in primary PostgreSQL database within tenant-scoped rows. No PII in logs (Fluent Bit redaction rules) or event envelopes beyond what downstream consumers require (and only in encrypted SQS/SNS).",
+        "pseudonymisation": "On GDPR Article 17 erasure request: Customer.name, Customer.email, Customer.phone replaced with pseudonymous tokens (e.g. REDACTED-{sha256(customer_id)}). Customer.pseudonymised_at set. Historical AppointmentEvent records retain customer_id FK but the Customer row is pseudonymised. Payment records retain billing reference but no PII.",
+        "erasureStrategy": "Erasure request handled by ops-service; AuditLog entry created. Pseudonymisation is irreversible. Event archive copies in S3 are also overwritten within 24 hours of erasure request (S3 Object Lambda triggered by erasure event).",
+        "logsRedaction": "Fluent Bit filter rules strip known PII field names (email, phone, name, recipient_contact) from all log streams before forwarding to Loki. Logs never contain customer or staff contact details (NFR013)."
+      }
+    },
+    "secretsManagement": {
+      "storage": "AWS Secrets Manager (all secrets — no plaintext in environment variables, ECS task definitions, or source code)",
+      "secrets": [
+        { "name": "DB password (app user)", "rotationPeriod": "30 days (automatic)" },
+        { "name": "Stripe secret key", "rotationPeriod": "90 days (manual)" },
+        { "name": "JWT RS256 private key", "rotationPeriod": "90 days (manual, rolling key)" },
+        { "name": "JWT RS256 public key", "rotationPeriod": "Rotated with private key" },
+        { "name": "SendGrid API key", "rotationPeriod": "180 days (manual)" },
+        { "name": "Twilio auth token", "rotationPeriod": "90 days (manual)" },
+        { "name": "ElastiCache auth token", "rotationPeriod": "30 days (automatic)" }
+      ],
+      "injectionMechanism": "Secrets are referenced by ARN in ECS task definitions (secrets block). ECS resolves ARNs at task launch and injects values as environment variables. No secret value is ever stored in source code, Dockerfile, or CI environment variables. IAM task execution role grants secretsmanager:GetSecretValue on the specific ARNs only (least-privilege).",
+      "auditTrail": "AWS CloudTrail logs all Secrets Manager GetSecretValue calls, including caller identity, timestamp, and secret ARN. Alerts raised if a secret is accessed by an unexpected IAM principal."
+    }
   }
 }

@@ -1,16 +1,104 @@
 {
-  "_fill": "YOU fill this. Define every domain-specific term your team uses. A shared glossary prevents misunderstandings between product, engineering, and design.",
   "glossary": [
     {
-      "term": "Key domain term",
-      "definition": "What this term means in the context of your product — be precise.",
-      "examples": ["A concrete example", "Another example"],
-      "relatedTerms": ["Related term 1", "Related term 2"]
+      "term": "Tenant",
+      "definition": "A business registered on AnjiSchedulo. Each tenant is fully isolated — their data, configuration, and events are never visible to other tenants.",
+      "examples": ["A hair salon", "A physiotherapy clinic", "A personal training studio"]
     },
     {
-      "term": "Second term",
-      "definition": "Definition.",
-      "relatedTerms": ["Related term"]
+      "term": "Appointment",
+      "definition": "A confirmed, scheduled reservation between a customer and a staff member for a specific service at a specific time. An appointment is the core aggregate of the system.",
+      "relatedTerms": ["Booking", "Slot", "Confirmation"]
+    },
+    {
+      "term": "Booking",
+      "definition": "The act of a customer requesting and completing an appointment. Booking is the process; Appointment is the result.",
+      "relatedTerms": ["Appointment", "Booking Saga"]
+    },
+    {
+      "term": "Slot",
+      "definition": "A specific time window on a specific date for a specific staff member during which they are available to perform a service.",
+      "relatedTerms": ["Availability", "Slot Lock"]
+    },
+    {
+      "term": "Slot Lock",
+      "definition": "A database-level exclusive reservation placed on a slot when a booking is in progress. Prevents two customers from confirming the same slot concurrently.",
+      "relatedTerms": ["Slot", "Double Booking"]
+    },
+    {
+      "term": "Availability",
+      "definition": "The computed set of open slots for a staff member on a given date, derived from their working hours, existing confirmed appointments, and manual blocks.",
+      "relatedTerms": ["Slot", "Working Hours", "Staff Block"]
+    },
+    {
+      "term": "Service",
+      "definition": "A bookable offering defined by a tenant. Has a name, duration, and price. Examples: Haircut (45 min, £25), Initial Consultation (60 min, £80).",
+      "relatedTerms": ["Tenant", "Staff", "Appointment"]
+    },
+    {
+      "term": "Staff Block",
+      "definition": "A manual period of unavailability set by a staff member or admin, outside of regular working hours. Prevents bookings during that period.",
+      "relatedTerms": ["Availability", "Staff Member"]
+    },
+    {
+      "term": "Cancellation Policy",
+      "definition": "A tenant-configured rule defining how many hours before an appointment a customer is permitted to cancel. Defined per tenant in tenant_config.",
+      "relatedTerms": ["Cancellation", "Tenant Config"]
+    },
+    {
+      "term": "Cancellation Saga",
+      "definition": "The choreographed sequence of events triggered when an appointment is cancelled: refund → slot release → notifications. Each step is independent.",
+      "relatedTerms": ["Saga", "Choreography", "Refund"]
+    },
+    {
+      "term": "Booking Saga",
+      "definition": "The orchestrated sequence of steps required to confirm a booking: reserve slot → charge payment → write confirmed event. Fails atomically with compensation.",
+      "relatedTerms": ["Saga", "Orchestration", "Booking Command Service"]
+    },
+    {
+      "term": "Event Sourcing",
+      "definition": "The pattern by which an appointment's current state is derived by replaying its ordered event history (requested → confirmed → rescheduled → completed) rather than reading a status column.",
+      "relatedTerms": ["Appointment Event", "Replay", "Event Store"]
+    },
+    {
+      "term": "Outbox",
+      "definition": "A database table written in the same transaction as an event. The Relay Service polls the outbox and publishes events to the message bus, guaranteeing at-least-once delivery without dual-write risk.",
+      "relatedTerms": ["Relay Service", "Transactional Outbox", "Event Bus"]
+    },
+    {
+      "term": "Dead Letter Queue (DLQ)",
+      "definition": "A queue that receives events which have failed processing after all retry attempts. Monitored by the Ops Service; contents are triaged and re-queued or discarded by a Platform Operator.",
+      "relatedTerms": ["Retry", "Ops Service", "Platform Operator"]
+    },
+    {
+      "term": "Replay",
+      "definition": "The act of re-publishing all historical events for a tenant in order, allowing downstream services (dashboard, analytics, query views) to rebuild their state. Used after bug fixes or data migrations.",
+      "relatedTerms": ["Event Sourcing", "Ops Service", "Materialized View"]
+    },
+    {
+      "term": "Materialized View",
+      "definition": "A pre-aggregated read-optimised data structure (e.g. tenant_dashboard_view) updated incrementally per event, enabling O(1) reads regardless of booking history depth.",
+      "relatedTerms": ["CQRS", "Dashboard Service", "Event"]
+    },
+    {
+      "term": "Tenant Context",
+      "definition": "The runtime object carrying tenant_id, user_id, role, and correlation_id through a request or event processing chain. Always derived from the JWT or event envelope — never from the request body.",
+      "relatedTerms": ["Tenant Isolation", "JWT", "Row-Level Security"]
+    },
+    {
+      "term": "Row-Level Security (RLS)",
+      "definition": "A PostgreSQL feature enforced at the database layer. Ensures queries only return rows belonging to the current tenant, acting as a safety net even if application code omits a tenant_id filter.",
+      "relatedTerms": ["Tenant Isolation", "Tenant Context"]
+    },
+    {
+      "term": "Correlation ID",
+      "definition": "A UUID generated at the API Gateway and attached to every HTTP header, log line, and event envelope in a request chain. Enables full distributed tracing across services.",
+      "relatedTerms": ["Causation ID", "Distributed Tracing", "Tempo"]
+    },
+    {
+      "term": "Idempotent Consumer",
+      "definition": "A message consumer that produces the same outcome regardless of how many times it processes the same message. Implemented via inbox deduplication or event_id watermarks.",
+      "relatedTerms": ["Inbox Pattern", "At-Least-Once Delivery", "Outbox"]
     }
   ]
 }
