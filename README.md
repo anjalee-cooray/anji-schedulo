@@ -2,7 +2,7 @@
 
 **Multi-tenant B2B SaaS appointment scheduling platform** for salons, clinics, fitness studios, and professional consultancies.
 
-Built with TypeScript · NestJS · Next.js 14 · PostgreSQL 15 · AWS ECS Fargate · Event-Driven Microservices
+Built with Java 25 · Spring Boot 3.x · Next.js 14 · PostgreSQL 15 · AWS ECS Fargate · Event-Driven Microservices
 
 ---
 
@@ -65,11 +65,11 @@ Domain events flow via Transactional Outbox → SNS → SQS FIFO per consumer:
 
 | Layer | Technology |
 |---|---|
-| Backend | TypeScript · NestJS 10 · Node.js 20 |
+| Backend | Java 25 · Spring Boot 3.x |
 | Frontend | Next.js 14 · React |
-| Monorepo | Turborepo · npm workspaces |
+| Monorepo | Gradle 8 (multi-module) |
 | Database | PostgreSQL 15 · PgBouncer · Flyway |
-| Cache | Redis 7 (ElastiCache) |
+| Cache | Redis 7 (ElastiCache) · Lettuce |
 | Message bus | AWS SNS + SQS FIFO |
 | Compute | AWS ECS Fargate |
 | Infrastructure | Terraform · AWS eu-west-1 |
@@ -94,12 +94,12 @@ anji-schedulo/
 │   ├── ops-service/                  # Platform operator tools (DLQ, replay)
 │   ├── outbox-relay/                 # Outbox → SNS publisher
 │   └── web/                          # Next.js customer + tenant admin UI
-├── packages/
-│   ├── shared-types/                 # Event envelope types, domain types
-│   ├── shared-logger/                # Pino logger wrapper
-│   ├── shared-telemetry/             # OpenTelemetry SDK setup
-│   ├── shared-db/                    # PgBouncer pool, base repository (RLS)
-│   └── shared-auth/                  # JWT guard, TenantContext middleware
+├── shared/
+│   ├── shared-events/                # Event envelope types, domain records
+│   ├── shared-logging/               # SLF4J/Logback configuration
+│   ├── shared-telemetry/             # OpenTelemetry Java agent config
+│   ├── shared-db/                    # Base repository (RLS), HikariCP config
+│   └── shared-security/              # JWT filter, TenantContext (ThreadLocal)
 ├── database/
 │   ├── migrations/                   # Flyway SQL migration files
 │   └── seeds/                        # Local dev seed data
@@ -135,25 +135,22 @@ The `documentation/` folder contains a complete, production-quality documentatio
 
 ### Prerequisites
 
-Node.js 20, Docker Desktop, AWS CLI. See [DX1 · Local Setup Guide](documentation/05-developer-experience/DX1-local-setup-guide.md) for the full setup.
+Java 25 JDK, Docker Desktop, AWS CLI. See [DX1 · Local Setup Guide](documentation/05-developer-experience/DX1-local-setup-guide.md) for the full setup.
 
 ### Quick start
 
 ```bash
-# Install dependencies
-npm install
-
 # Start backing services (PostgreSQL, Redis, LocalStack, Grafana LGTM)
 docker compose up -d
 
 # Run database migrations
-npm run db:migrate
+./gradlew flywayMigrate
 
 # Seed demo data
-npm run db:seed
+./gradlew :shared:seed-data:run
 
-# Start all services with hot-reload
-npm run dev
+# Start a service (repeat per service)
+./gradlew :services:booking-command-service:bootRun
 ```
 
 Services start on ports 4000–4009. The Next.js web app runs on port 3001. Grafana is at http://localhost:3000.
@@ -161,9 +158,9 @@ Services start on ports 4000–4009. The Next.js web app runs on port 3001. Graf
 ### Tests
 
 ```bash
-npm run test              # unit tests (all services)
-npm run test:integration  # integration tests (requires Docker Compose)
-npm run test:coverage     # unit + coverage report
+./gradlew test                    # unit tests (all modules)
+./gradlew integrationTest         # integration tests (Testcontainers)
+./gradlew test jacocoTestReport   # unit tests + coverage report
 ```
 
 ---
