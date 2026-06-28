@@ -4,7 +4,7 @@
     "stack": "Grafana LGTM (Loki for logs, Grafana for dashboards and alerting, Tempo for traces, Mimir for metrics). Deployed on AWS ECS Fargate in the same VPC as the application services. Grafana Cloud is the fallback if self-hosted LGTM is unavailable during an incident.",
     "components": {
       "metrics": {
-        "collectionMechanism": "Prometheus scrape. Each NestJS service exposes /metrics endpoint via prom-client. Mimir scrapes via Prometheus remote_write protocol every 15 seconds.",
+        "collectionMechanism": "Prometheus scrape. Each Spring Boot service exposes /actuator/prometheus endpoint via Micrometer (prometheus registry). Mimir scrapes via Prometheus remote_write protocol every 15 seconds.",
         "storageBackend": "Grafana Mimir (horizontally scalable Prometheus-compatible storage on S3)",
         "retention": "90 days",
         "keyMetrics": [
@@ -94,7 +94,7 @@
         "mandatoryFields": [
           "timestamp (ISO 8601 — log line timestamp)",
           "level (enum: debug | info | warn | error)",
-          "service (string — NestJS app name, e.g. booking-command-service)",
+          "service (string — Spring Boot app name, e.g. booking-command-service)",
           "tenant_id (string UUID — from request TenantContext; 'system' for non-tenant-scoped operations)",
           "correlation_id (string UUID — propagated from API Gateway X-Correlation-Id header, NFR014)",
           "user_id (string UUID — from JWT sub claim; 'anonymous' for unauthenticated requests)",
@@ -113,7 +113,7 @@
         ]
       },
       "traces": {
-        "instrumentationLibrary": "OpenTelemetry SDK for Node.js (auto-instrumentation for NestJS HTTP, PostgreSQL via pg driver, Redis, and AWS SDK calls)",
+        "instrumentationLibrary": "OpenTelemetry SDK for Java (auto-instrumentation agent for Spring Boot HTTP, PostgreSQL via JDBC, Redis via Lettuce, and AWS SDK calls)",
         "exporter": "OTLP (gRPC) to Grafana Tempo",
         "retention": "7 days",
         "samplingStrategy": {
