@@ -52,8 +52,10 @@ Step 3: Add flag to ECS task definition module
     │
     ▼
 Step 4: Add flag guard in application code
-    const rescheduleEnabled = process.env.FEATURE_BOOKING_RESCHEDULE === 'true';
-    if (!rescheduleEnabled) throw new FeatureDisabledError('reschedule');
+    // In application.yml: feature.booking.reschedule: ${FEATURE_BOOKING_RESCHEDULE:false}
+    @Value("${feature.booking.reschedule:false}")
+    private boolean rescheduleEnabled;
+    if (!rescheduleEnabled) throw new FeatureDisabledException("FEATURE_BOOKING_RESCHEDULE");
     │
     ▼
 Step 5: Add flag to flag inventory table in O2-feature-flag-strategy.md
@@ -74,18 +76,28 @@ Step 7: PR review and merge to main
 
 ## 4. Flag Guard Code Pattern
 
-```typescript
-// services/{service}/src/guards/feature.guard.ts
+```java
+// services/{service}/src/main/java/com/anjischedulo/shared/FeatureGuard.java
 
-export function requireFeature(flag: string): void {
-  const enabled = process.env[flag] === 'true';
-  if (!enabled) {
-    throw new FeatureDisabledError(flag);
-  }
+@Component
+public class FeatureGuard {
+
+    private final Environment env;
+
+    public FeatureGuard(Environment env) {
+        this.env = env;
+    }
+
+    public void requireFeature(String propertyKey) {
+        boolean enabled = env.getProperty(propertyKey, Boolean.class, false);
+        if (!enabled) {
+            throw new FeatureDisabledException(propertyKey);
+        }
+    }
 }
 
-// Usage in controller or service:
-requireFeature('FEATURE_BOOKING_RESCHEDULE');
+// Usage in controller or service (property key maps to env var via application.yml):
+featureGuard.requireFeature("feature.booking.reschedule");
 ```
 
 ---

@@ -120,7 +120,7 @@ Role-Based Access Control (RBAC) with three enforcement layers: gateway (rate li
 ### Enforcement
 
 1. **api-gateway:** Validates JWT signature and expiry on every authenticated request. Rejects tokens with invalid signatures or expired `exp`. Rate-limits by `tenant_id` to prevent individual tenant abuse from affecting shared infrastructure.
-2. **Service layer:** Each NestJS service endpoint is decorated with a `@Roles(...)` guard. Requests with a `role` claim that does not match the required role are rejected with `403 Forbidden`. The `tenant_id` from the token is compared to the `tenant_id` in the URL path or request body — mismatches are rejected.
+2. **Service layer:** Each Spring Boot service endpoint is protected by a `RolesAllowed` security filter. Requests with a `role` claim that does not match the required role are rejected with `403 Forbidden`. The `tenant_id` from the token is compared to the `tenant_id` in the URL path or request body — mismatches are rejected.
 3. **Database layer:** PostgreSQL RLS enforces `tenant_id` scoping at the database level. Even if a service bug passes the wrong `tenant_id`, the RLS policy prevents the query from returning another tenant's data.
 
 ---

@@ -9,7 +9,7 @@ lastUpdated: 2026-06-28
 
 ## Overview
 
-AnjiSchedulo is built as a TypeScript monorepo of NestJS microservices, deployed on AWS ECS Fargate and connected via an event-driven SNS/SQS message bus. Each bounded context maps to one NestJS application, built independently with Turborepo and esbuild, and deployed as a Docker container. The stack is chosen for operational simplicity, type safety at scale, and compatibility with the event-driven architecture defined in ADR003.
+AnjiSchedulo is built as a Java 25 multi-module Gradle monorepo of Spring Boot 3.x microservices, deployed on AWS ECS Fargate and connected via an event-driven SNS/SQS message bus. Each bounded context maps to one Spring Boot application, built independently with Gradle 8, and deployed as a Docker container. The stack is chosen for operational simplicity, strong typing at scale, and compatibility with the event-driven architecture defined in ADR003.
 
 ---
 
@@ -17,18 +17,19 @@ AnjiSchedulo is built as a TypeScript monorepo of NestJS microservices, deployed
 
 | Component | Technology | Version | Purpose |
 |---|---|---|---|
-| Language | TypeScript | 5.x | Type safety across all services and shared domain types |
-| Framework | NestJS | 10.x | Dependency injection, modular architecture mapping to bounded contexts |
-| Build Orchestration | Turborepo | Latest | Monorepo task graph — lint, test, build across all services in parallel |
-| Compiler | esbuild | Latest | Fast TypeScript transpilation for production Docker images |
-| Runtime | Node.js | 20 LTS | Long-term supported runtime |
+| Language | Java | 25 | Strong typing across all services and shared domain types |
+| Framework | Spring Boot | 3.x | Dependency injection, modular architecture mapping to bounded contexts |
+| Build Orchestration | Gradle 8 (multi-module) | 8.x | Monorepo task graph — lint, test, build across all services in parallel |
+| Build Tool | Gradle bootJar | 8.x | Fast Spring Boot fat-jar packaging for production Docker images |
+| Package Manager | Gradle wrapper | — | Reproducible builds via `./gradlew` — no separate install step |
 | Database | PostgreSQL 15 | 15.x | Primary data store; RLS for multi-tenant isolation (ADR002) |
 | Cache | Redis 7 | 7.x (AWS ElastiCache) | Slot availability cache, TenantConfig hot cache, idempotency key lookup |
 | Message Bus | AWS SNS + SQS FIFO | Managed | Event fan-out (SNS) and per-consumer ordered delivery (SQS FIFO) — ADR003 |
-| Containerisation | Docker | Latest | Multi-stage builds, distroless base images, non-root user |
+| Containerisation | Docker | Latest | Multi-stage builds, eclipse-temurin base images, non-root user |
 | Container Orchestration | AWS ECS Fargate | Managed | Serverless container execution — no EC2 node management |
 | Service Discovery | AWS Cloud Map + ALB | Managed | Private DNS namespaces per environment; path-based routing via ALB |
 | Connection Pooling | PgBouncer | 1.21.x | Transaction-mode pooling; max 200 connections per service; ECS sidecar |
+| JDBC Pool | HikariCP (Spring Data JPA) | Bundled | Connection pool within each service JVM; backed by PgBouncer |
 | DB Migrations | Flyway | 10.x | Versioned, forward-only migrations; run as ECS one-off task pre-deployment |
 | Stream Processing | AWS Kinesis Data Streams | Managed | Real-time anomaly detection for analytics-service (in scope from v1.0) |
 | Secrets | AWS Secrets Manager | Managed | Encrypted secret storage; automatic rotation; ECS task injection |
@@ -57,8 +58,8 @@ AnjiSchedulo is built as a TypeScript monorepo of NestJS microservices, deployed
 | Traces | Grafana Tempo | Distributed tracing, retention 7 days |
 | Dashboards & Alerts | Grafana 10+ | 7 dashboards; PromQL/LogQL alerting; PagerDuty + Slack channels |
 | Log Collection | Fluent Bit | ECS sidecar; PII redaction filter; metadata enrichment from ECS task metadata |
-| Instrumentation | OpenTelemetry SDK (Node.js) | Auto-instrumentation for HTTP, PostgreSQL, Redis, AWS SDK |
-| Metrics Exposure | prom-client | `/metrics` endpoint on every NestJS service; scraped by Mimir |
+| Instrumentation | OpenTelemetry SDK for Java (javaagent) | Auto-instrumentation for HTTP, JDBC, Lettuce Redis, AWS SDK |
+| Metrics Exposure | Micrometer (spring-boot-actuator prometheus registry) | `/actuator/prometheus` endpoint on every Spring Boot service; scraped by Mimir |
 | On-call Alerting | PagerDuty | P1/P2 severity alerts; escalation policy per on-call rotation |
 
 ---
@@ -67,7 +68,7 @@ AnjiSchedulo is built as a TypeScript monorepo of NestJS microservices, deployed
 
 | Component | Technology | Purpose |
 |---|---|---|
-| Pipeline | GitHub Actions | Lint, type-check, unit test, integration test, build, deploy |
+| Pipeline | GitHub Actions | Checkstyle, SpotBugs, unit test, integration test, build, deploy |
 | Container Registry | Amazon ECR | Docker image storage per service; immutable tags per commit SHA |
 | Deployments | ECS Rolling Update | 50% minimum healthy / 200% maximum; automatic rollback on smoke test failure |
 | DB Migrations | Flyway via ECS one-off task | Run against target environment before service rollout |
@@ -90,9 +91,9 @@ AnjiSchedulo is built as a TypeScript monorepo of NestJS microservices, deployed
 
 ## Technology Choice Rationale
 
-**TypeScript** — The monorepo spans 10 services sharing domain types (event envelopes, entity schemas, business rule constants). TypeScript's structural type system catches cross-service interface mismatches at compile time. This is especially important for event payload shapes where a wrong field type on `appointment.confirmed` would silently corrupt the dashboard view.
+**Java 25** — The monorepo spans 10 services sharing domain types (event envelopes, entity schemas, business rule constants). Java's strong type system and records catch cross-service interface mismatches at compile time. This is especially important for event payload shapes where a wrong field type on `appointment.confirmed` would silently corrupt the dashboard view.
 
-**NestJS** — NestJS's module system maps directly to the bounded context model: each context is a NestJS module with its own providers, controllers, and event handlers. Dependency injection makes unit testing straightforward. The framework's opinionated structure reduces architectural drift across a 10-service monorepo.
+**Spring Boot 3.x** — Spring Boot's application context and component model maps directly to the bounded context model: each context is a Spring Boot application with its own beans, controllers, and event listeners. Dependency injection makes unit testing straightforward. The framework's opinionated structure reduces architectural drift across a 10-service monorepo.
 
 **AWS ECS Fargate** — Serverless container execution eliminates EC2 node patching and AMI management. Auto-scaling on CPU utilisation and SQS queue depth is native to Fargate via Application Auto Scaling. Each service scales independently — a spike in availability queries does not require scaling the booking saga service.
 

@@ -26,7 +26,7 @@ Examples:
 - `FEATURE_TENANT_SSO=true`
 - `FEATURE_PAYMENT_SAVED_CARDS=false`
 
-Flag names use SCREAMING_SNAKE_CASE. The domain segment matches the NestJS service that owns the feature.
+Flag names use SCREAMING_SNAKE_CASE. The domain segment matches the Spring Boot service that owns the feature.
 
 ---
 
@@ -80,16 +80,20 @@ ECS tasks redeploy when the task definition changes. The new flag value takes ef
 
 ## 5. Flag Usage in Code
 
-```typescript
+```java
 // ✅ Simple boolean check — no flag service, no SDK
-const smsEnabled = process.env.FEATURE_NOTIFICATION_SMS === 'true';
+// In application.yml the env var is bound to a typed property:
+// feature.notification.sms: ${FEATURE_NOTIFICATION_SMS:false}
 
-if (smsEnabled && tenant.plan !== 'starter') {
-  await this.twilioClient.send(...);
+@Value("${feature.notification.sms:false}")
+private boolean smsEnabled;
+
+if (smsEnabled && !tenant.plan().equals("starter")) {
+    twilioClient.send(...);
 }
 ```
 
-Flags are read once at startup where possible (module initialisation), not on every request.
+Flags are injected once at bean construction (`@Value` fields) — not read on every request.
 
 ---
 

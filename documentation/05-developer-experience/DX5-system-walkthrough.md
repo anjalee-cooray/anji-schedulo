@@ -15,25 +15,24 @@ This document walks through the AnjiSchedulo codebase from the perspective of a 
 ## 2. Repository Structure
 
 ```
-anji-schedulo/                    # Turborepo monorepo root
-  apps/
-    api-gateway/                  # NestJS — JWT auth, routing, rate limiting
-    booking-command-service/      # NestJS — booking saga orchestrator
-    availability-service/         # NestJS — slot availability + slot lock
-    payment-service/              # NestJS — Stripe integration
-    tenant-service/               # NestJS — tenant provisioning + config
-    notification-service/         # NestJS — email + SMS via SendGrid + Twilio
-    dashboard-service/            # NestJS — tenant dashboard view projections
-    analytics-service/            # NestJS — analytics summary projections
-    ops-service/                  # NestJS — platform operator tools (DLQ, replay)
-    outbox-relay/                 # NestJS — reads outbox_records, publishes to SNS
-    web/                          # Next.js 14 — customer + tenant admin frontend
+anji-schedulo/                    # Gradle 8 multi-module monorepo root
+  services/
+    api-gateway/                  # Spring Boot — JWT auth, routing, rate limiting
+    booking-command-service/      # Spring Boot — booking saga orchestrator
+    availability-service/         # Spring Boot — slot availability + slot lock
+    payment-service/              # Spring Boot — Stripe integration
+    tenant-service/               # Spring Boot — tenant provisioning + config
+    notification-service/         # Spring Boot — email + SMS via SendGrid + Twilio
+    dashboard-service/            # Spring Boot — tenant dashboard view projections
+    analytics-service/            # Spring Boot — analytics summary projections
+    ops-service/                  # Spring Boot — platform operator tools (DLQ, replay)
+    outbox-relay/                 # Spring Boot — reads outbox_records, publishes to SNS
+  web/                            # Next.js 14 — customer + tenant admin frontend
   packages/
-    shared-types/                 # Event envelope types, domain types
-    shared-logger/                # Pino logger wrapper
-    shared-telemetry/             # OpenTelemetry SDK setup
-    shared-db/                    # PgBouncer pool, base repository
-    shared-auth/                  # JWT guard, TenantContext middleware
+    shared-types/                 # Event envelope records, domain types (Java)
+    shared-telemetry/             # OpenTelemetry Java agent configuration
+    shared-db/                    # Base repository with TenantContext SET LOCAL
+    shared-auth/                  # JWT filter, TenantContextFilter
     database/
       migrations/                 # Flyway SQL migration files
       seeds/                      # Seed data scripts
@@ -52,7 +51,7 @@ This is the most important flow in the system. Follow it to understand how CQRS,
 
 ### Step 1 — HTTP Request enters api-gateway
 
-**File:** `apps/api-gateway/src/booking/booking.controller.ts`
+**File:** `services/api-gateway/src/main/java/com/anjischedulo/gateway/BookingController.java`
 
 ```
 POST /tenants/{slug}/bookings
@@ -70,7 +69,7 @@ Authorization: Bearer {jwt}
 
 ### Step 2 — Saga orchestrated in booking-command-service
 
-**File:** `apps/booking-command/src/booking/booking.service.ts`
+**File:** `services/booking-command-service/src/main/java/com/anjischedulo/booking/BookingService.java`
 
 ```
 BookingService.createBooking(command)
@@ -110,7 +109,7 @@ BookingService.createBooking(command)
 
 ### Step 3 — outbox-relay publishes the event
 
-**File:** `apps/outbox-relay/src/relay/relay.service.ts`
+**File:** `services/outbox-relay/src/main/java/com/anjischedulo/outbox/OutboxRelayService.java`
 
 ```
 outbox-relay polls outbox_records (every 100ms):
@@ -129,17 +128,17 @@ outbox-relay polls outbox_records (every 100ms):
 
 SNS fans out to SQS queues. Each consumer processes independently:
 
-**notification-service** (`apps/notification-service/src/notification/notification.consumer.ts`):
+**notification-service** (`services/notification-service/src/main/java/com/anjischedulo/notification/NotificationConsumer.java`):
 - Reads customer name + email from `event.payload` (no back-call to booking service)
 - Selects template based on `event_type`
 - Calls SendGrid API → sends confirmation email to customer and staff
 - Writes `notifications` record
 
-**dashboard-service** (`apps/dashboard-service/src/dashboard/dashboard.consumer.ts`):
+**dashboard-service** (`services/dashboard-service/src/main/java/com/anjischedulo/dashboard/DashboardConsumer.java`):
 - Increments `tenant_dashboard_views.confirmed_bookings_today`
 - Updates `last_event_id` watermark
 
-**analytics-service** (`apps/analytics-service/src/analytics/analytics.consumer.ts`):
+**analytics-service** (`services/analytics-service/src/main/java/com/anjischedulo/analytics/AnalyticsConsumer.java`):
 - Updates `analytics_summaries` aggregate counts
 
 ---
@@ -181,13 +180,13 @@ outbox-relay publishes appointment.cancelled to SNS
 
 | File | Why it matters |
 |---|---|
-| `apps/api-gateway/src/auth/jwt.strategy.ts` | JWT validation, `tid` claim extraction, TenantContext setup |
-| `apps/booking-command/src/booking/booking.service.ts` | The saga orchestrator — most critical business logic |
-| `packages/shared-db/src/base.repository.ts` | Sets `SET LOCAL app.tenant_id` on every transaction (RLS enforcement) |
-| `packages/shared-types/src/event-envelope.ts` | The event envelope type — must be used for all events |
+| `services/api-gateway/src/main/java/com/anjischedulo/gateway/JwtAuthFilter.java` | JWT validation, `tid` claim extraction, TenantContext setup |
+| `services/booking-command-service/src/main/java/com/anjischedulo/booking/BookingService.java` | The saga orchestrator — most critical business logic |
+| `packages/shared-db/src/main/java/com/anjischedulo/db/BaseRepository.java` | Sets `SET LOCAL app.tenant_id` on every transaction (RLS enforcement) |
+| `packages/shared-types/src/main/java/com/anjischedulo/types/EventEnvelope.java` | The event envelope record — must be used for all events |
 | `database/migrations/V001__initial_schema.sql` | Full schema with RLS policies |
-| `apps/outbox-relay/src/relay/relay.service.ts` | Transactional outbox polling loop |
-| `apps/ops-service/src/replay/replay.service.ts` | Event replay implementation (FR011) |
+| `services/outbox-relay/src/main/java/com/anjischedulo/outbox/OutboxRelayService.java` | Transactional outbox polling loop |
+| `services/ops-service/src/main/java/com/anjischedulo/ops/ReplayService.java` | Event replay implementation (FR011) |
 
 ---
 
@@ -195,24 +194,18 @@ outbox-relay publishes appointment.cancelled to SNS
 
 Every database transaction goes through the base repository:
 
-```typescript
-// packages/shared-db/src/base.repository.ts
-async withTenant<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): Promise<T> {
-  const client = await this.pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query(`SET LOCAL app.tenant_id = '${tenantId}'`);  // activates RLS
-    const result = await fn(client);
-    await client.query('COMMIT');
-    return result;
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
+```java
+// packages/shared-db/src/main/java/com/anjischedulo/db/BaseRepository.java
+@Transactional
+public <T> T withTenant(UUID tenantId, Supplier<T> fn) {
+    // Executed at the start of each transaction via TransactionSynchronizationManager
+    jdbcTemplate.execute(
+        "SET LOCAL app.tenant_id = '" + tenantId + "'");  // activates RLS
+    return fn.get();
 }
 ```
+
+In practice this is wired via a Spring `TransactionSynchronizationAdapter` that fires `SET LOCAL app.tenant_id` at the start of each `@Transactional` method, using the `tenantId` stored in the `TenantContextFilter`'s `ThreadLocal`.
 
 PostgreSQL RLS then enforces `tenant_id = current_setting('app.tenant_id')` on every read and write. If `app.tenant_id` is null, RLS returns zero rows — never all rows (BR005 safe default).
 

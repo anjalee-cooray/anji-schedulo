@@ -12,18 +12,19 @@ Install the following before cloning the repo:
 
 | Tool | Version | Install |
 |---|---|---|
-| Node.js | 20.x (LTS) | `nvm install 20` |
-| npm | 10.x (bundled with Node 20) | — |
+| Java 25 JDK | 25 | `brew install --cask temurin@25` (Adoptium) or [https://adoptium.net](https://adoptium.net) |
 | Docker Desktop | 4.x+ | https://www.docker.com/products/docker-desktop |
 | AWS CLI | 2.x | `brew install awscli` |
-| Flyway CLI | 10.x | `brew install flyway` (optional — also runs via Docker) |
+| Flyway CLI | 10.x | `brew install flyway` (optional — also runs via Gradle) |
 | Git | 2.x | `brew install git` |
+
+Note: the Gradle wrapper (`./gradlew`) is checked in to the repo — no separate Gradle installation is needed.
 
 Optional but recommended:
 
 | Tool | Purpose |
 |---|---|
-| `nvm` | Node version manager |
+| `jenv` | Java version manager |
 | `direnv` | Auto-load `.envrc` per project |
 | TablePlus or DBeaver | PostgreSQL GUI |
 | RedisInsight | Redis key browser |
@@ -35,10 +36,10 @@ Optional but recommended:
 ```bash
 git clone https://github.com/anji-schedulo/anji-schedulo.git
 cd anji-schedulo
-npm install          # installs all workspace packages via Turborepo
+./gradlew build      # compiles all modules and runs unit tests
 ```
 
-The repo is a Turborepo monorepo. All `npm` commands run from the root.
+The repo is a Gradle 8 multi-module monorepo. All `./gradlew` commands run from the root.
 
 ---
 
@@ -115,7 +116,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
 LOKI_URL=http://localhost:3100
 
 # Service
-NODE_ENV=development
+APP_ENV=development
 SERVICE_NAME=api-gateway
 ```
 
@@ -127,7 +128,7 @@ SERVICE_NAME=api-gateway
 
 ```bash
 # Run Flyway migrations against local PostgreSQL
-npm run db:migrate
+./gradlew flywayMigrate
 
 # Or using Flyway CLI directly
 flyway -url=jdbc:postgresql://localhost:5432/anjischedulo \
@@ -139,7 +140,7 @@ flyway -url=jdbc:postgresql://localhost:5432/anjischedulo \
 Verify migrations ran:
 
 ```bash
-npm run db:info
+./gradlew flywayInfo
 # All migrations should show 'Success'
 ```
 
@@ -148,7 +149,7 @@ npm run db:info
 ## 6. Seed Local Data
 
 ```bash
-npm run db:seed
+./gradlew dbSeed
 ```
 
 This creates:
@@ -166,10 +167,10 @@ Login credentials are printed to the console after seeding.
 ### Option A — Start all services
 
 ```bash
-npm run dev
+./gradlew bootRunAll
 ```
 
-Turborepo starts all 10 NestJS services in parallel with hot-reload. Ports:
+Starts all 10 Spring Boot services in parallel using Gradle parallel execution. Ports:
 
 | Service | Port |
 |---|---|
@@ -187,13 +188,13 @@ Turborepo starts all 10 NestJS services in parallel with hot-reload. Ports:
 ### Option B — Start a specific service
 
 ```bash
-npm run dev --filter=booking-command-service
+./gradlew :services:booking-command-service:bootRun
 ```
 
 ### Option C — Start the frontend only
 
 ```bash
-npm run dev --filter=web
+cd web && npm run dev
 # Next.js app at http://localhost:3001
 ```
 
@@ -222,16 +223,16 @@ Open Grafana at http://localhost:3000 (admin / admin) — you should see the Pla
 
 ```bash
 # Unit tests (all services)
-npm run test
+./gradlew test
 
-# Unit tests (specific service, watch mode)
-npm run test --filter=booking-command-service -- --watch
+# Unit tests (specific service)
+./gradlew :services:booking-command-service:test
 
-# Integration tests (requires Docker Compose running)
-npm run test:integration
+# Integration tests (Testcontainers starts containers automatically)
+./gradlew integrationTest
 
-# All tests + coverage report
-npm run test:coverage
+# All tests + coverage report (JaCoCo)
+./gradlew test integrationTest jacocoTestReport
 ```
 
 Integration tests spin up a clean PostgreSQL database inside Docker Compose for each test run. They do not use the main dev database.
@@ -243,8 +244,8 @@ Integration tests spin up a clean PostgreSQL database inside Docker Compose for 
 | Problem | Fix |
 |---|---|
 | `docker compose up` fails on port 5432 | Stop local PostgreSQL: `brew services stop postgresql` |
-| `npm run dev` fails with "Cannot find module" | Run `npm install` again from repo root |
-| Flyway migration fails | Check PostgreSQL is running: `docker compose ps postgres` |
+| `./gradlew bootRun` fails with "No main class found" | Verify `spring.main.class` is set in the service's `build.gradle.kts` |
+| `./gradlew flywayMigrate` fails | Check PostgreSQL is running: `docker compose ps postgres` |
 | LocalStack SNS/SQS not reachable | Check LocalStack container logs: `docker compose logs localstack` |
 | JWT validation fails locally | Verify `JWT_PUBLIC_KEY` matches `JWT_PRIVATE_KEY` in `.env.local` |
 | Redis connection refused | Verify `REDIS_AUTH_TOKEN` matches what LocalStack or Redis container expects |
@@ -254,7 +255,7 @@ Integration tests spin up a clean PostgreSQL database inside Docker Compose for 
 ## 11. Stopping the Environment
 
 ```bash
-# Stop all services (Ctrl+C in the npm run dev terminal)
+# Stop all services (Ctrl+C in the ./gradlew bootRunAll terminal)
 
 # Stop Docker Compose (keeps data)
 docker compose stop

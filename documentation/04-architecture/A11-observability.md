@@ -21,7 +21,7 @@ The observability system is designed to answer four questions at any moment:
 
 ## 2. Metrics
 
-**Collection:** Prometheus scrape. Each NestJS service exposes `/metrics` via `prom-client`. Mimir scrapes via Prometheus `remote_write` every 15 seconds.  
+**Collection:** Prometheus scrape. Each Spring Boot service exposes `/actuator/prometheus` via Micrometer (spring-boot-actuator prometheus registry). Mimir scrapes via Prometheus `remote_write` every 15 seconds.  
 **Storage:** Grafana Mimir (horizontally scalable, S3 backend).  
 **Retention:** 90 days.
 
@@ -57,7 +57,7 @@ Every log line emitted by every service must include:
 |---|---|
 | `timestamp` | ISO 8601 timestamp |
 | `level` | `debug` \| `info` \| `warn` \| `error` |
-| `service` | NestJS app name (e.g. `booking-command-service`) |
+| `service` | Spring Boot app name (e.g. `booking-command-service`) |
 | `tenant_id` | From request TenantContext; `'system'` for non-tenant-scoped ops |
 | `correlation_id` | Propagated from API Gateway `X-Correlation-Id` header (NFR014) |
 | `user_id` | From JWT `sub` claim; `'anonymous'` for unauthenticated requests |
@@ -80,7 +80,7 @@ The following fields are stripped from all log streams before forwarding to Loki
 
 ## 4. Traces
 
-**Instrumentation:** OpenTelemetry SDK for Node.js (auto-instrumentation for NestJS HTTP, `pg` PostgreSQL driver, Redis, AWS SDK calls).  
+**Instrumentation:** OpenTelemetry SDK for Java (javaagent — auto-instrumentation for Spring Boot HTTP, JDBC/Spring Data JPA, Lettuce Redis, AWS SDK calls).  
 **Exporter:** OTLP (gRPC) to Grafana Tempo.  
 **Retention:** 7 days.
 

@@ -66,8 +66,8 @@ ECS task starts (new deployment or new task):
     Value is NEVER logged (Fluent Bit redacts *password* field names)
           │
           ▼
-NestJS service reads process.env.DB_PASSWORD at startup
-    Connects to PostgreSQL via PgBouncer
+Spring Boot service reads DB_PASSWORD environment variable at startup (via application.yml or @Value)
+    Connects to PostgreSQL via PgBouncer (HikariCP connection pool)
     Secret value is in memory only — never written to disk or logs
 ```
 
@@ -143,10 +143,10 @@ The following patterns are prohibited and enforced via pre-commit hooks and CI l
 
 | Prohibited | Why |
 |---|---|
-| `process.env.DB_PASSWORD = 'hardcoded'` in source code | Plaintext secret in repo |
+| Hardcoded secret strings in Java source code | Plaintext secret in repo |
 | `.env` file committed to git | Exposes secrets via git history |
 | `environment:` array in ECS task definition JSON with secret values | Appears in CloudTrail and ECS console plaintext |
-| `console.log(process.env.DB_PASSWORD)` | PII/secret in logs |
+| `log.info("password={}", dbPassword)` | PII/secret in logs |
 | Secret values in Terraform `.tfvars` files | Appears in Terraform state |
 
 Terraform uses `data.aws_secretsmanager_secret_version` to reference existing secrets — it does not create secrets with hardcoded values.

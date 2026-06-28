@@ -11,17 +11,17 @@
 Before marking a PR ready for review, confirm:
 
 ### Code quality
-- [ ] `npm run lint` passes with zero errors
-- [ ] `npm run type-check` passes with zero errors
-- [ ] No `any`, `@ts-ignore`, `console.log`, or commented-out code
+- [ ] `./gradlew checkstyleMain spotbugsMain` passes with zero violations
+- [ ] `./gradlew spotlessCheck` passes (code formatted correctly)
+- [ ] No raw exception types, `System.out.println`, or commented-out code
 - [ ] No secrets, API keys, or PII in code, logs, or tests
 
 ### Tests
-- [ ] Unit tests written for new business logic
-- [ ] Business rules covered by test name (e.g. "throws when monthly limit exceeded (BR003)")
-- [ ] Integration tests cover any new saga step or event flow
+- [ ] Unit tests written for new business logic (JUnit 5 + Mockito)
+- [ ] Business rules covered by test name (e.g. `throwsWhenMonthlyLimitExceeded_BR003`)
+- [ ] Integration tests cover any new saga step or event flow (Testcontainers)
 - [ ] If new tenant-scoped table: cross-tenant isolation test added
-- [ ] `npm run test` passes locally
+- [ ] `./gradlew test` passes locally
 
 ### Data and migrations
 - [ ] If schema change: Flyway migration file included (`V{version}__{description}.sql`)
@@ -77,10 +77,10 @@ When reviewing a PR, check these areas in order:
 - [ ] Is there a corresponding RLS policy for new tables?
 - [ ] Is the cross-tenant isolation test present and meaningful?
 
-```typescript
+```java
 // Look for this pattern in integration tests:
-it('returns 404 when tenant_A reads tenant_B data', ...)
-it('returns zero rows when app.tenant_id is not set', ...)
+@Test void returns404WhenTenantAReadsTenantBData() { ... }
+@Test void returnsZeroRowsWhenTenantContextIsNotSet() { ... }
 ```
 
 ### Business rule compliance
@@ -95,7 +95,7 @@ it('returns zero rows when app.tenant_id is not set', ...)
 - [ ] No plaintext secrets in code or tests
 - [ ] No PII in log messages (check for email, phone, name in log calls)
 - [ ] SQL uses parameterised queries (`$1`, `$2`), not string interpolation
-- [ ] New endpoints protected by JWT auth (check `@UseGuards(JwtAuthGuard)`)
+- [ ] New endpoints protected by JWT auth (check Spring Security filter chain and `@PreAuthorize`)
 
 ### Observability
 
@@ -107,7 +107,7 @@ it('returns zero rows when app.tenant_id is not set', ...)
 
 - [ ] Tests describe behaviour, not implementation
 - [ ] Business rules referenced in failing-case test names
-- [ ] No `expect(true).toBe(true)` or other vacuous assertions
+- [ ] No vacuous assertions like `assertTrue(true)` or `assertNotNull(x)` without meaning
 
 ---
 
@@ -156,7 +156,7 @@ All PRs are **squash-merged** into the target branch. The PR title becomes the s
 ```
 feat(booking): add reschedule flow with saga orchestration
 fix(availability): correct slot boundary calculation for DST transitions
-chore: upgrade @nestjs/core to 10.3.9
+chore: upgrade spring-boot to 3.3.2
 ```
 
 After merging, delete the feature branch. GitHub is configured to auto-delete branches on merge.

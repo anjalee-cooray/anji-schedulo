@@ -31,7 +31,7 @@ main (protected)
 | Bug fix | `fix/{ticket}-{short-description}` | `fix/AS-201-slot-lock-timeout` |
 | Hotfix | `hotfix/{ticket}-{short-description}` | `hotfix/AS-210-stripe-webhook-sig` |
 | Release | `release/v{major}.{minor}.{patch}` | `release/v1.1.0` |
-| Chore | `chore/{short-description}` | `chore/upgrade-nestjs-10-5` |
+| Chore | `chore/{short-description}` | `chore/upgrade-spring-boot-3-3` |
 
 Ticket numbers refer to Linear issue IDs.
 
@@ -84,7 +84,7 @@ Closes AS-201
 ```
 
 ```
-chore: upgrade @nestjs/core to 10.3.9
+chore: upgrade spring-boot to 3.3.2
 ```
 
 ---

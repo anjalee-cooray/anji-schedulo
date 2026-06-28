@@ -142,7 +142,7 @@ SNS → SQS (KMS encrypted)
 ### 6.2 Log Flow (PII Redaction)
 
 ```
-NestJS application → structured JSON logs (stdout)
+Spring Boot application → structured JSON logs (stdout, SLF4J + Logback)
     ▼
 Fluent Bit (ECS sidecar)
     │  Redact: email, phone, name, recipient_contact, authorization, *secret*key*

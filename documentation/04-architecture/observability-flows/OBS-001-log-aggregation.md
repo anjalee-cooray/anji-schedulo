@@ -15,9 +15,9 @@ Every ECS task produces structured JSON logs to stdout. A Fluent Bit sidecar con
 ## 2. Log Pipeline
 
 ```
-NestJS application
-    │ stdout: structured JSON (pino logger)
-    │ Format: {"timestamp":"...","level":"info","service":"booking-command-service",
+Spring Boot application
+    │ stdout: structured JSON (SLF4J + Logback, logstash-logback-encoder)
+    │ Format: {"timestamp":"...","level":"INFO","service":"booking-command-service",
     │          "tenant_id":"...","correlation_id":"...","trace_id":"...","message":"..."}
     ▼
 Fluent Bit (ECS sidecar, FireLens integration)
@@ -83,7 +83,7 @@ Fluent Bit (ECS sidecar, FireLens integration)
     Match             *
     Record            ecs_cluster    ${ECS_CLUSTER}
     Record            ecs_task_id    ${ECS_TASK_ID}
-    Record            environment    ${NODE_ENV}
+    Record            environment    ${APP_ENV}
 
 [OUTPUT]
     Name              loki
@@ -128,12 +128,12 @@ Key LogQL queries used by the Platform team:
 
 ## 5. Mandatory Log Fields
 
-Every log line emitted by every NestJS service must include:
+Every log line emitted by every Spring Boot service must include:
 
 | Field | Source | Example |
 |---|---|---|
-| `timestamp` | pino (auto) | `2026-06-28T10:00:00.000Z` |
-| `level` | pino | `info` |
+| `timestamp` | logstash-logback-encoder (auto) | `2026-06-28T10:00:00.000Z` |
+| `level` | Logback | `INFO` |
 | `service` | app config | `booking-command-service` |
 | `tenant_id` | TenantContext middleware | `tid-abc-123` |
 | `correlation_id` | X-Correlation-Id header | `corr-xyz-789` |

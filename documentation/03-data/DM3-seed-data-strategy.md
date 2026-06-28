@@ -63,7 +63,7 @@ flyway.locations=classpath:db/migrations,classpath:db/seeds
 
 ## 3. Local Development Seed
 
-The local development seed creates a fully operational demo tenant ("Serenity Salon") in the developer's local database. After running `npm run db:seed`, the developer can immediately:
+The local development seed creates a fully operational demo tenant ("Serenity Salon") in the developer's local database. After running `./gradlew dbSeed`, the developer can immediately:
 
 - Log in as Tenant Admin and view the populated dashboard
 - Browse the public booking page and make a test booking
@@ -211,32 +211,36 @@ The local seed also creates:
 
 CI fixtures are loaded per test suite, not globally. Each test suite is self-contained and manages its own setup and teardown. The shared seed pattern is:
 
-```typescript
-// test/fixtures/tenant.fixture.ts
-export const TEST_TENANT_ID = '10000000-0000-0000-0000-000000000001';
+```java
+// packages/test-fixtures/src/main/java/com/anjischedulo/fixtures/TenantFixture.java
+public class TenantFixture {
 
-export async function seedTestTenant(db: Pool): Promise<void> {
-  await db.query(`
-    INSERT INTO tenants (tenant_id, name, owner_email, owner_name, plan, status, created_at)
-    VALUES ($1, 'Test Tenant', 'test@example.invalid', 'Test Owner', 'pro', 'active', NOW())
-    ON CONFLICT (tenant_id) DO NOTHING
-  `, [TEST_TENANT_ID]);
+    public static final UUID TEST_TENANT_ID =
+        UUID.fromString("10000000-0000-0000-0000-000000000001");
 
-  await db.query(`SET LOCAL app.tenant_id = $1`, [TEST_TENANT_ID]);
-}
+    public static void seedTestTenant(JdbcTemplate jdbc) {
+        jdbc.update("""
+            INSERT INTO tenants (tenant_id, name, owner_email, owner_name, plan, status, created_at)
+            VALUES (?, 'Test Tenant', 'test@example.invalid', 'Test Owner', 'pro', 'active', NOW())
+            ON CONFLICT (tenant_id) DO NOTHING
+            """, TEST_TENANT_ID);
+        jdbc.execute("SET LOCAL app.tenant_id = '" + TEST_TENANT_ID + "'");
+    }
 
-export async function teardownTestTenant(db: Pool): Promise<void> {
-  // Delete in FK-safe order
-  await db.query(`DELETE FROM audit_log WHERE tenant_id = $1`, [TEST_TENANT_ID]);
-  await db.query(`DELETE FROM appointment_events WHERE tenant_id = $1`, [TEST_TENANT_ID]);
-  await db.query(`DELETE FROM slot_locks WHERE tenant_id = $1`, [TEST_TENANT_ID]);
-  await db.query(`DELETE FROM appointments WHERE tenant_id = $1`, [TEST_TENANT_ID]);
-  await db.query(`DELETE FROM customers WHERE tenant_id = $1`, [TEST_TENANT_ID]);
-  await db.query(`DELETE FROM services WHERE tenant_id = $1`, [TEST_TENANT_ID]);
-  await db.query(`DELETE FROM working_hours WHERE tenant_id = $1`, [TEST_TENANT_ID]);
-  await db.query(`DELETE FROM staff_members WHERE tenant_id = $1`, [TEST_TENANT_ID]);
-  await db.query(`DELETE FROM tenant_configs WHERE tenant_id = $1`, [TEST_TENANT_ID]);
-  await db.query(`DELETE FROM tenants WHERE tenant_id = $1`, [TEST_TENANT_ID]);
+    @Transactional
+    public static void teardownTestTenant(JdbcTemplate jdbc) {
+        // Delete in FK-safe order
+        jdbc.update("DELETE FROM audit_log WHERE tenant_id = ?", TEST_TENANT_ID);
+        jdbc.update("DELETE FROM appointment_events WHERE tenant_id = ?", TEST_TENANT_ID);
+        jdbc.update("DELETE FROM slot_locks WHERE tenant_id = ?", TEST_TENANT_ID);
+        jdbc.update("DELETE FROM appointments WHERE tenant_id = ?", TEST_TENANT_ID);
+        jdbc.update("DELETE FROM customers WHERE tenant_id = ?", TEST_TENANT_ID);
+        jdbc.update("DELETE FROM services WHERE tenant_id = ?", TEST_TENANT_ID);
+        jdbc.update("DELETE FROM working_hours WHERE tenant_id = ?", TEST_TENANT_ID);
+        jdbc.update("DELETE FROM staff_members WHERE tenant_id = ?", TEST_TENANT_ID);
+        jdbc.update("DELETE FROM tenant_configs WHERE tenant_id = ?", TEST_TENANT_ID);
+        jdbc.update("DELETE FROM tenants WHERE tenant_id = ?", TEST_TENANT_ID);
+    }
 }
 ```
 
@@ -267,26 +271,30 @@ INSERT INTO customers VALUES ('B0000001-...', 'B0000000-...', 'Customer B', 'b@e
 
 The test asserts:
 
-```typescript
-it('should never return Tenant B data when authenticated as Tenant A', async () => {
-  // Set RLS context to Tenant A
-  await db.query(`SET LOCAL app.tenant_id = 'A0000000-...'`);
+```java
+@Test
+void shouldNeverReturnTenantBDataWhenAuthenticatedAsTenantA() {
+    // Set RLS context to Tenant A
+    jdbc.execute("SET LOCAL app.tenant_id = 'A0000000-0000-0000-0000-000000000001'");
 
-  const result = await db.query(`SELECT * FROM customers`);
+    List<Map<String, Object>> rows = jdbc.queryForList("SELECT * FROM customers");
 
-  // Must return only Tenant A's customer — never Tenant B's
-  expect(result.rows).toHaveLength(1);
-  expect(result.rows[0].tenant_id).toBe('A0000000-...');
-  expect(result.rows.every(r => r.tenant_id === 'A0000000-...')).toBe(true);
-});
+    // Must return only Tenant A's customer — never Tenant B's
+    assertThat(rows).hasSize(1);
+    assertThat(rows.get(0).get("tenant_id").toString())
+        .isEqualTo("A0000000-0000-0000-0000-000000000001");
+    assertThat(rows).allMatch(r ->
+        r.get("tenant_id").toString().equals("A0000000-0000-0000-0000-000000000001"));
+}
 
-it('should return zero rows when tenant context is missing', async () => {
-  // No SET LOCAL app.tenant_id — simulates missing context
-  const result = await db.query(`SELECT * FROM customers`);
+@Test
+void shouldReturnZeroRowsWhenTenantContextIsMissing() {
+    // No SET LOCAL app.tenant_id — simulates missing context
+    List<Map<String, Object>> rows = jdbc.queryForList("SELECT * FROM customers");
 
-  // RLS safe default: zero rows (never all rows)
-  expect(result.rows).toHaveLength(0);
-});
+    // RLS safe default: zero rows (never all rows)
+    assertThat(rows).isEmpty();
+}
 ```
 
 ---
@@ -299,8 +307,8 @@ The staging environment uses a nightly reset to the canonical "Serenity Salon" d
 # Runs nightly at 01:00 UTC (GitHub Actions cron)
 - name: Reset staging seed
   run: |
-    npm run db:reset:staging   # Truncates all tables, re-runs migrations
-    npm run db:seed:staging    # Runs R__seed_dev.sql against staging DB
+    ./gradlew dbResetStaging   # Truncates all tables, re-runs migrations
+    ./gradlew dbSeedStaging    # Runs R__seed_dev.sql against staging DB
 ```
 
 Staging uses separate Stripe test-mode keys. All payment operations in staging use Stripe's test card numbers (`4242 4242 4242 4242`). No real money moves.
@@ -313,12 +321,12 @@ The staging SendGrid integration sends to a single catch-all inbox (`staging-inb
 
 | Command | Environment | Effect |
 |---|---|---|
-| `npm run db:seed` | Local | Runs `R__seed_dev.sql` — idempotent |
-| `npm run db:reset` | Local | Drops and recreates DB, runs all migrations, then seeds |
-| `npm run db:seed:ci` | CI | Runs `R__seed_ci.sql` — minimal fixtures only |
-| `npm run db:reset:staging` | Staging | Truncates staging DB, re-runs migrations |
-| `npm run db:seed:staging` | Staging | Runs `R__seed_dev.sql` against staging |
-| `npm run db:seed:verify` | Any | Runs assertions against expected seed state (used in CI smoke test) |
+| `./gradlew dbSeed` | Local | Runs `R__seed_dev.sql` — idempotent |
+| `./gradlew dbReset` | Local | Drops and recreates DB, runs all migrations, then seeds |
+| `./gradlew dbSeedCi` | CI | Runs `R__seed_ci.sql` — minimal fixtures only |
+| `./gradlew dbResetStaging` | Staging | Truncates staging DB, re-runs migrations |
+| `./gradlew dbSeedStaging` | Staging | Runs `R__seed_dev.sql` against staging |
+| `./gradlew dbSeedVerify` | Any | Runs assertions against expected seed state (used in CI smoke test) |
 
 ---
 
@@ -349,4 +357,4 @@ All deterministic seed UUIDs follow the pattern `{prefix}-0000-0000-0000-{suffix
 - Seed files are reviewed in pull requests alongside their associated feature or migration.
 - Adding a new entity type requires updating this document with the seed pattern for that entity.
 - Seed IDs are reserved namespaces: production data must never use IDs starting with `00000000-`, `10000000-`, or `20000000-` (enforced by a runtime guard that rejects these prefixes in non-development environments).
-- PII in seed data is entirely synthetic. No real customer names, email addresses, or phone numbers appear in any seed file. CI pipelines run `npm run db:seed:verify` to assert no real-looking PII patterns exist in seed data.
+- PII in seed data is entirely synthetic. No real customer names, email addresses, or phone numbers appear in any seed file. CI pipelines run `./gradlew dbSeedVerify` to assert no real-looking PII patterns exist in seed data.

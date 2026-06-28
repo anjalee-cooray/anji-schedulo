@@ -8,7 +8,7 @@
 
 ## 1. Overview
 
-Distributed traces link every step of a request — from the initial HTTP call through multiple microservices, database queries, Redis operations, and SQS messages — into a single observable timeline. AnjiSchedulo uses the OpenTelemetry SDK for Node.js (auto-instrumentation) and exports traces to Grafana Tempo via OTLP gRPC.
+Distributed traces link every step of a request — from the initial HTTP call through multiple microservices, database queries, Redis operations, and SQS messages — into a single observable timeline. AnjiSchedulo uses the OpenTelemetry SDK for Java (javaagent, auto-instrumentation) and exports traces to Grafana Tempo via OTLP gRPC.
 
 The `correlation_id` is propagated through all spans and log lines, enabling a single search term to pull all related logs and the full distributed trace.
 
@@ -49,31 +49,27 @@ All spans → OTLP gRPC → Grafana Tempo
 
 ## 3. OpenTelemetry Configuration
 
-Auto-instrumentation is applied via the OpenTelemetry Node.js SDK at process startup:
+Auto-instrumentation is applied via the OpenTelemetry Java agent attached at JVM startup:
 
-```typescript
-// apps/shared/telemetry/src/index.ts
-import { NodeSDK } from '@opentelemetry/sdk-node';
-import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-grpc';
-import { Resource } from '@opentelemetry/resources';
-import { SemanticResourceAttributes } from '@opentelemetry/semantic-conventions';
-import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node';
-
-const sdk = new NodeSDK({
-  resource: new Resource({
-    [SemanticResourceAttributes.SERVICE_NAME]: process.env.SERVICE_NAME,
-    [SemanticResourceAttributes.DEPLOYMENT_ENVIRONMENT]: process.env.NODE_ENV,
-  }),
-  traceExporter: new OTLPTraceExporter({
-    url: 'grpc://tempo.internal:4317',
-  }),
-  instrumentations: [getNodeAutoInstrumentations()],
-});
-
-sdk.start();
+```bash
+# JVM argument in ECS task definition
+-javaagent:/opt/otel/opentelemetry-javaagent.jar
 ```
 
-**Auto-instrumented libraries:** NestJS HTTP (incoming + outgoing), `pg` PostgreSQL driver, `ioredis` Redis client, AWS SDK v3 (SNS, SQS, Secrets Manager calls).
+```yaml
+# application.yml — OpenTelemetry configuration
+otel:
+  service:
+    name: ${SERVICE_NAME}
+  exporter:
+    otlp:
+      endpoint: grpc://tempo.internal:4317
+  resource:
+    attributes:
+      deployment.environment: ${APP_ENV}
+```
+
+**Auto-instrumented libraries:** Spring Boot HTTP (incoming + outgoing via Spring WebMVC/WebClient), JDBC/Spring Data JPA (HikariCP + PostgreSQL), Lettuce Redis client, AWS SDK v2 (SNS, SQS, Secrets Manager calls).
 
 ---
 

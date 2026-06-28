@@ -9,7 +9,7 @@
 
 ## 1. Overview
 
-AnjiSchedulo deploys containerised NestJS services to AWS ECS Fargate via a GitHub Actions CI/CD pipeline. Three environments exist: `dev`, `staging`, and `production`. All deployments are zero-downtime rolling updates. Database migrations run as ECS one-off tasks before service rollout. Rollback to the previous task definition is automatic on smoke test failure.
+AnjiSchedulo deploys containerised Spring Boot 3.x services to AWS ECS Fargate via a GitHub Actions CI/CD pipeline. Three environments exist: `dev`, `staging`, and `production`. All deployments are zero-downtime rolling updates. Database migrations run as ECS one-off tasks before service rollout. Rollback to the previous task definition is automatic on smoke test failure.
 
 ---
 
@@ -50,25 +50,26 @@ Terraform state: S3 (`anji-schedulo-tf-state-{env}`) with DynamoDB state lock.
 
 ```dockerfile
 # Build stage
-FROM node:20-alpine AS build
+FROM eclipse-temurin:25-jdk-alpine AS build
 WORKDIR /app
-COPY package*.json turbo.json ./
-RUN npm ci
-COPY . .
-RUN npx turbo build --filter=<service-name>
+COPY gradlew settings.gradle.kts ./
+COPY gradle/ gradle/
+COPY services/<service-name>/ services/<service-name>/
+COPY packages/ packages/
+RUN ./gradlew :services:<service-name>:bootJar --no-daemon
 
-# Production — distroless
-FROM gcr.io/distroless/nodejs20-debian12
+# Production — minimal JRE
+FROM eclipse-temurin:25-jre-alpine
 WORKDIR /app
-COPY --from=build /app/apps/<service-name>/dist ./dist
-COPY --from=build /app/node_modules ./node_modules
-USER nonroot
-EXPOSE 3000
-CMD ["dist/main.js"]
+COPY --from=build /app/services/<service-name>/build/libs/*.jar app.jar
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+USER appuser
+EXPOSE 8080
+ENTRYPOINT ["java", "-jar", "app.jar"]
 ```
 
-- Non-root user, distroless base — minimal attack surface
-- Built with esbuild via Turborepo — fast incremental builds
+- Non-root user, eclipse-temurin:25-jre-alpine base — minimal attack surface
+- Built with Gradle bootJar — incremental Gradle builds per module
 - Images pushed to **Amazon ECR**: `anji-schedulo/{env}/{service-name}:{git-sha}`
 - ECR lifecycle: retain last 10 images; delete untagged after 7 days
 - Amazon Inspector scans on push — P1 vulnerabilities block deployment
@@ -79,13 +80,13 @@ CMD ["dist/main.js"]
 
 ```
 PR opened (feature/*)
-├── 1. Lint + type-check (tsc --noEmit, ESLint)
-├── 2. Unit tests (Jest)
-├── 3. Integration tests (Docker Compose: PostgreSQL + Redis + LocalStack)
+├── 1. Static analysis (Checkstyle + SpotBugs)
+├── 2. Unit tests (JUnit 5 + Mockito)
+├── 3. Integration tests (JUnit 5 + Testcontainers: PostgreSQL + Redis + LocalStack)
 │       ├── Cross-tenant isolation tests (NFR012)
 │       ├── Booking saga tests
 │       └── Event envelope validation tests
-├── 4. Build Docker images (multi-stage, esbuild)
+├── 4. Build Docker images (multi-stage, Gradle bootJar)
 ├── 5. Push to ECR (dev tag: {git-sha})
 └── 6. Deploy to dev
 

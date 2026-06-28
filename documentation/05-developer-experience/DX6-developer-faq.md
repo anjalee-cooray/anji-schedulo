@@ -8,13 +8,13 @@
 
 ## Local Development
 
-**Q: `npm run dev` starts all services, but I only want to work on `booking-command-service`. How do I start just that service and its dependencies?**
+**Q: `./gradlew bootRunAll` starts all services, but I only want to work on `booking-command-service`. How do I start just that service and its dependencies?**
 
 ```bash
-npm run dev --filter=booking-command-service...
+./gradlew :services:booking-command-service:bootRun
 ```
 
-The `...` suffix tells Turborepo to include all dependencies of the service. It will also start `availability-service`, `payment-service`, and `api-gateway` since `booking-command-service` depends on them. Docker Compose handles the DB and Redis.
+Start the services it depends on separately in other terminals (`availability-service`, `payment-service`, `api-gateway`), or run the full stack via Docker Compose for the backing services — Docker Compose handles the DB and Redis.
 
 ---
 
@@ -23,8 +23,8 @@ The `...` suffix tells Turborepo to include all dependencies of the service. It 
 ```bash
 docker compose down -v          # removes the postgres volume
 docker compose up -d postgres   # restarts postgres
-npm run db:migrate              # re-runs all Flyway migrations
-npm run db:seed                 # re-seeds demo data
+./gradlew flywayMigrate         # re-runs all Flyway migrations
+./gradlew dbSeed                # re-seeds demo data
 ```
 
 ---
@@ -110,20 +110,21 @@ In AnjiSchedulo: booking creation uses orchestration (slot lock → payment → 
 
 Without the Outbox, there is a race condition:
 
-```
+```java
 // ❌ Without Outbox — can fail between steps
-await db.query('INSERT INTO appointments ...');
-await sns.publish(...);  // if this fails, appointment exists but no event was emitted
+jdbcTemplate.update("INSERT INTO appointments ...");
+sns.publish(...);  // if this fails, appointment exists but no event was emitted
 ```
 
 With the Outbox:
 
-```
-// ✅ With Outbox — atomic
-BEGIN TRANSACTION
-  INSERT INTO appointments ...
-  INSERT INTO outbox_records ...   ← same transaction
-COMMIT                              ← both or neither
+```java
+// ✅ With Outbox — atomic (@Transactional wraps both inserts)
+@Transactional
+public void createBooking(...) {
+    jdbcTemplate.update("INSERT INTO appointments ...");
+    jdbcTemplate.update("INSERT INTO outbox_records ...");  // same transaction
+}
 // outbox-relay publishes separately, with its own retry
 ```
 
@@ -144,27 +145,25 @@ SQS FIFO with `MessageGroupId` groups messages within a FIFO queue. Messages wit
 
 **Q: Why are integration tests not allowed to mock the database?**
 
-A previous incident: mocked database tests passed because the mock didn't enforce RLS policies. The real PostgreSQL instance rejected a query that the mock accepted. The bug reached production before being caught. Since then, integration tests must use a real PostgreSQL instance with migrations applied, including all RLS policies.
+A previous incident: mocked database tests passed because the mock didn't enforce RLS policies. The real PostgreSQL instance rejected a query that the mock accepted. The bug reached production before being caught. Since then, integration tests must use a real PostgreSQL instance via Testcontainers with all Flyway migrations applied, including all RLS policies.
 
 ---
 
 **Q: How do I write a cross-tenant isolation test?**
 
-```typescript
-it('returns 404 when tenant_A reads tenant_B appointment', async () => {
-  // Arrange
-  const tokenA = await getTestJwt({ tenant_id: 'tenant-a', role: 'tenant_admin' });
-  const appointmentB = await createTestAppointment({ tenant_id: 'tenant-b' });
+```java
+@Test
+void returns404WhenTenantAReadsTenantBAppointment() throws Exception {
+    // Arrange
+    String tokenA = getTestJwt("tenant-a", "tenant_admin");
+    UUID appointmentBId = createTestAppointment("tenant-b");
 
-  // Act
-  const response = await request(app.getHttpServer())
-    .get(`/appointments/${appointmentB.appointment_id}`)
-    .set('Authorization', `Bearer ${tokenA}`);
-
-  // Assert
-  expect(response.status).toBe(404);
-  expect(response.body).not.toHaveProperty('tenant_id', 'tenant-b');
-});
+    // Act + Assert
+    mockMvc.perform(get("/appointments/{id}", appointmentBId)
+            .header("Authorization", "Bearer " + tokenA))
+        .andExpect(status().isNotFound())
+        .andExpect(jsonPath("$.tenant_id").doesNotExist());
+}
 ```
 
 The test must not just check for 404 — also verify that no tenant_B data appears in the response body.

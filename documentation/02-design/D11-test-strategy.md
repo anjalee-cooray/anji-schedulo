@@ -43,12 +43,12 @@ This document defines the testing approach for AnjiSchedulo. Every testing decis
 
 | Layer | Tool | Coverage Target | Run Frequency |
 |---|---|---|---|
-| Unit | Vitest | 90% branch coverage on domain logic | Every commit (CI) |
-| Integration | Vitest + Testcontainers | All service → DB and service → SQS paths | Every PR (CI) |
+| Unit | JUnit 5 + Mockito | 90% branch coverage on domain logic | Every commit (CI) |
+| Integration | JUnit 5 + Testcontainers | All service → DB and service → SQS paths | Every PR (CI) |
 | Contract | Pact | All producer → consumer event contracts | Every PR (CI) |
 | E2E | Playwright | Critical booking and cancellation flows | Every merge to main |
 | Performance | k6 | Booking API p95 < 1s at 100 concurrent | Nightly (CI scheduled) |
-| Security | OWASP ZAP + npm audit | OWASP Top 10 on all public endpoints | Weekly + pre-release |
+| Security | OWASP ZAP + Gradle dependency-check | OWASP Top 10 on all public endpoints | Weekly + pre-release |
 | Accessibility | axe-core + Playwright | WCAG 2.1 AA on all screens | Every PR (CI) |
 | Chaos | AWS Fault Injection Simulator | Outbox relay recovery, DLQ handling | Monthly |
 
@@ -74,10 +74,10 @@ Unit tests cover pure domain logic where the correctness guarantee is most valua
 
 ### Tooling
 
-- **Vitest** (fast, native ESM, TypeScript)
-- Tests live in `__tests__/unit/` within each service package
-- No database, no network, no file I/O — pure function inputs and outputs
-- Mocking: `vi.mock()` for external collaborators only. Domain logic has no external calls — no mocks needed there.
+- **JUnit 5** + **Mockito** — standard Java testing stack
+- Tests live in `src/test/java/` within each service module
+- No database, no network, no file I/O — pure method inputs and outputs
+- Mocking: `Mockito.mock()` / `@MockBean` for external collaborators only. Domain logic has no external calls — no mocks needed there.
 
 ---
 
@@ -231,9 +231,9 @@ Contract tests verify that event producers emit schemas that consumers expect. T
 
 ### Contract Verification Process
 
-1. Consumer team writes a Pact consumer test that defines the expected event structure.
+1. Consumer team writes a Pact consumer test (using `pact-jvm`) that defines the expected event structure.
 2. The generated Pact file is published to Pact Broker (hosted in CI).
-3. Producer team runs `pact:verify` which reads all Pact files from the Broker and verifies that the producer's actual events satisfy every consumer's expectations.
+3. Producer team runs `./gradlew pactVerify` which reads all Pact files from the Broker and verifies that the producer's actual events satisfy every consumer's expectations.
 4. CI blocks merge if any Pact verification fails.
 
 ### Required Fields in All Events (BR013)
@@ -406,7 +406,7 @@ Test: authenticated as tenant A, request resource owned by tenant B
 
 ### Dependency Audit
 
-`npm audit --audit-level=high` runs on every PR. High and critical severity vulnerabilities block merge. Moderate vulnerabilities are tracked and resolved within 30 days.
+`./gradlew dependencyCheckAnalyze` (OWASP Dependency-Check) runs on every PR. High and critical severity vulnerabilities block merge. Moderate vulnerabilities are tracked and resolved within 30 days.
 
 ---
 
@@ -476,13 +476,13 @@ Test data uses synthetic names and email addresses only (`{uuid}@example.com`). 
 
 ```yaml
 steps:
-  - unit-tests          # Vitest — all services in parallel
-  - integration-tests   # Vitest + Testcontainers — all services in parallel
-  - contract-verify     # Pact — verify all producer contracts
+  - unit-tests          # JUnit 5 + Mockito — all services in parallel
+  - integration-tests   # JUnit 5 + Testcontainers — all services in parallel
+  - contract-verify     # Pact (pact-jvm) — verify all producer contracts
   - e2e-tests           # Playwright — critical paths on staging
   - accessibility       # axe-core via Playwright
-  - security-audit      # npm audit + ZAP passive scan
-  - build-check         # TypeScript compile + esbuild bundle
+  - security-audit      # Gradle dependency-check + ZAP passive scan
+  - build-check         # Gradle bootJar — compile and package all services
 ```
 
 All steps must pass before merge to main. Unit, integration, contract, and accessibility tests run in parallel. E2E tests run after deployment to staging (sequential dependency).

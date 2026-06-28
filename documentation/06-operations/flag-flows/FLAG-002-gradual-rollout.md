@@ -74,10 +74,12 @@ Use [FLAG-003 · Kill Switch](FLAG-003-kill-switch.md) to disable in production 
 
 The current implementation enables/disables a flag globally per environment. If future requirements call for per-tenant or per-plan flag enablement (e.g. "enable for Enterprise tenants only"), this is enforced in application code:
 
-```typescript
-const ssoEnabled = process.env.FEATURE_TENANT_SSO === 'true';
-if (ssoEnabled && tenant.plan === 'enterprise') {
-  // feature active
+```java
+@Value("${feature.tenant.sso:false}")
+private boolean ssoEnabled;
+
+if (ssoEnabled && tenant.plan().equals("enterprise")) {
+    // feature active
 }
 ```
 

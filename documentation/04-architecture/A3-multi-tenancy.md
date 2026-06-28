@@ -71,10 +71,10 @@ api-gateway validates the JWT on every inbound request. It forwards `tenant_id` 
 
 ### Layer 2 — Application Filter (service layer)
 
-Each NestJS service uses a `TenantContextMiddleware` that:
+Each Spring Boot service uses a `TenantContextFilter` that:
 1. Extracts `tenant_id` from the `X-Tenant-ID` header injected by api-gateway.
 2. Validates that it is a well-formed UUID.
-3. Stores it in the NestJS request context (AsyncLocalStorage).
+3. Stores it in a `ThreadLocal`-backed `TenantContext` holder.
 4. Passes it to every PostgreSQL transaction as `SET LOCAL app.tenant_id`.
 
 No service layer query is issued without first establishing the tenant context. If `tenant_id` is missing or malformed, the service returns `403 Forbidden` before any query executes.

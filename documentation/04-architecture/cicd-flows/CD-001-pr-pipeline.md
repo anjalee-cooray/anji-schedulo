@@ -24,15 +24,15 @@ PR Opened / Commit Pushed
          ▼
 ┌─────────────────────────────┐
 │  Stage 1: Code Quality      │
-│  - ESLint (all packages)    │
-│  - tsc --noEmit (strict)    │
-│  - Prettier check           │
+│  - Checkstyle (all modules) │
+│  - SpotBugs (all modules)   │
+│  - Gradle build (compile)   │
 └─────────────┬───────────────┘
               │ pass
               ▼
 ┌─────────────────────────────┐
 │  Stage 2: Unit Tests        │
-│  - Jest (all services)      │
+│  - JUnit 5 + Mockito        │
 │  - Coverage threshold: 80%  │
 └─────────────┬───────────────┘
               │ pass
@@ -54,9 +54,9 @@ PR Opened / Commit Pushed
               ▼
 ┌─────────────────────────────────────────┐
 │  Stage 4: Build Docker Images           │
-│  - Turborepo builds only changed        │
-│    services (affected graph)            │
-│  - Multi-stage esbuild build            │
+│  - Gradle builds only changed           │
+│    modules (incremental build)          │
+│  - Multi-stage Gradle bootJar build     │
 │  - Tag: {git-sha}                       │
 └─────────────┬───────────────────────────┘
               │ pass
@@ -96,21 +96,23 @@ PR Opened / Commit Pushed
 
 These tests are mandatory and run on every PR. They verify the three-layer isolation model (BR005, NFR012):
 
-```typescript
+```java
 // Example: tenant_A token cannot read tenant_B data
-it('returns 404 when tenant_A reads tenant_B appointment', async () => {
-  const tokenA = await getJwtToken({ tenant_id: tenantA.id, role: 'tenant_admin' });
-  const response = await request(app)
-    .get(`/appointments/${tenantBAppointment.id}`)
-    .set('Authorization', `Bearer ${tokenA}`);
-  expect(response.status).toBe(404);
-});
+@Test
+void returns404WhenTenantAReadsTenantBAppointment() throws Exception {
+    String tokenA = getJwtToken(tenantA.getId(), "tenant_admin");
+    mockMvc.perform(get("/appointments/{id}", tenantBAppointment.getId())
+            .header("Authorization", "Bearer " + tokenA))
+        .andExpect(status().isNotFound());
+}
 
 // DB-level: null tenant context returns zero rows
-it('returns zero rows when app.tenant_id is not set', async () => {
-  const rows = await db.query('SELECT * FROM appointments');
-  expect(rows.rowCount).toBe(0); // RLS safe default
-});
+@Test
+void returnsZeroRowsWhenTenantContextIsNotSet() {
+    int count = jdbcTemplate.queryForObject(
+        "SELECT COUNT(*) FROM appointments", Integer.class);
+    assertThat(count).isEqualTo(0); // RLS safe default
+}
 ```
 
 ---
@@ -128,32 +130,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: '20' }
-      - run: npm ci
-      - run: npx turbo lint type-check
+      - uses: actions/setup-java@v4
+        with: { java-version: '25', distribution: 'temurin' }
+      - run: ./gradlew checkstyleMain spotbugsMain --no-daemon
 
   unit-tests:
     needs: quality
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: npm ci
-      - run: npx turbo test -- --coverage
+      - uses: actions/setup-java@v4
+        with: { java-version: '25', distribution: 'temurin' }
+      - run: ./gradlew test jacocoTestReport --no-daemon
 
   integration-tests:
     needs: quality
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:15
-        env: { POSTGRES_DB: anjischedulo_test, POSTGRES_PASSWORD: test }
-      redis:
-        image: redis:7-alpine
     steps:
       - uses: actions/checkout@v4
-      - run: npm ci
-      - run: npx turbo test:integration
+      - uses: actions/setup-java@v4
+        with: { java-version: '25', distribution: 'temurin' }
+      - run: ./gradlew integrationTest --no-daemon
+      # Testcontainers starts PostgreSQL 15 and Redis 7 automatically
 
   build-and-deploy-dev:
     needs: [unit-tests, integration-tests]
@@ -161,10 +159,12 @@ jobs:
     environment: dev
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { java-version: '25', distribution: 'temurin' }
       - uses: aws-actions/configure-aws-credentials@v4
         with: { role-to-assume: ${{ secrets.AWS_DEV_ROLE_ARN }} }
       - uses: aws-actions/amazon-ecr-login@v2
-      - run: npx turbo docker:build docker:push
+      - run: ./gradlew bootJar dockerBuildPush --no-daemon
         env: { IMAGE_TAG: ${{ github.sha }}, ENV: dev }
       - run: ./scripts/deploy.sh dev ${{ github.sha }}
 ```
@@ -175,7 +175,7 @@ jobs:
 
 | Stage Failure | Effect |
 |---|---|
-| Lint / type-check fails | PR blocked; no further stages run |
+| Checkstyle / SpotBugs fails | PR blocked; no further stages run |
 | Unit tests fail | PR blocked |
 | Integration tests fail (incl. isolation tests) | PR blocked |
 | Docker build fails | PR blocked |
